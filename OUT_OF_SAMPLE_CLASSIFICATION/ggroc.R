@@ -1,3 +1,4 @@
+# Adapated from: https://gist.github.com/charly06/91578196fc615c5a79c7174318be4349
 #' Functions plots multiple 'roc' objects into one plot
 #' @param rocs
 #'   A list of 'roc' objects. Every list item has a name.
