@@ -1,0 +1,689 @@
+---
+title: "Out-of-sample-classification DNAm (BRAIN-MEND)"
+author: "[Marta Nabais](https://github.com/m-nabais)"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+twitter: "RandomWalkin"
+github: "m-nabais"
+output:
+  epuRate::PCTG:
+    toc: TRUE
+    number_sections: FALSE
+    code_folding: "hide"
+params:
+  adjust: "no"
+---
+
+```{r import_libraries, echo=FALSE, message=FALSE, warning=FALSE}
+# You need these libraries to run this template:
+library(rmarkdown)    # install.packages("rmarkdown") 
+library(epuRate)      # devtools::install_github("holtzy/epuRate", force=TRUE)
+library(data.table)
+library(tidyverse)
+library(pROC)
+library(ggplot2)
+library(cowplot)
+library(ggsci)
+library(GGally)
+library(drlib)
+source("ggroc.R")
+library(RColorBrewer)
+```
+
+> First I need to parse the MOA & MOMENT results:
+
+```{r parse_data, echo = T}
+# Parse data ----
+myfiles <- list.files(path = "./mps", pattern = "*.profile", full.names = T)
+#length(myfiles)
+#[1] 1176 
+
+mps <- lapply(myfiles, fread)
+
+no.files <- length(myfiles)
+
+names(mps) <- myfiles
+
+for(f in 1:length(mps)){
+  
+  mps[[f]] <- mps[[f]][,c(2,4,5)]
+}
+
+for(f in seq(1,no.files,7)){
+  
+  colnames(mps[[f]]) <- c("IID", "CNT_SCORE_0.1", "SCORE_0.1")
+  
+}
+
+for(f in seq(2,no.files,7)){
+  
+  colnames(mps[[f]]) <- c("IID", "CNT_SCORE_0.2", "SCORE_0.2")
+  
+}
+
+for(f in seq(3,no.files,7)){
+  
+  colnames(mps[[f]]) <- c("IID", "CNT_SCORE_0.5", "SCORE_0.5")
+  
+}
+
+for(f in seq(4,no.files,7)){
+  
+  colnames(mps[[f]]) <- c("IID", "CNT_SCORE_0.01", "SCORE_0.01")
+  
+}
+
+for(f in seq(5,no.files,7)){
+  
+  colnames(mps[[f]]) <- c("IID", "CNT_SCORE_0.001", "SCORE_0.001")
+  
+}
+
+for(f in seq(6,no.files,7)){
+  
+  colnames(mps[[f]]) <- c("IID", "CNT_SCORE_0.0001", "SCORE_0.0001")
+  
+}
+
+for(f in seq(7,no.files,7)){
+  
+  colnames(mps[[f]]) <- c("IID", "CNT_SCORE_0.00001", "SCORE_0.00001")
+  
+}
+
+mps[grepl("AUS_to", names(mps))] <- lapply(mps[grepl("AUS_to", names(mps))], 
+                                           function(x){ x$discovery <- "AUS"; 
+                                           x$disorder <- "ALS"; return(x)})
+
+mps[grepl("_SGPD_to", names(mps))] <- lapply(mps[grepl("_SGPD_to", names(mps))], 
+                                             function(x){ x$discovery <- "SGPD"; 
+                                             x$disorder <- "PD";  
+                                             return(x)})
+
+mps[grepl("MOA_AIBL_to|MOMENT_AIBL_to", names(mps))] <- lapply(mps[grepl("MOA_AIBL_to|MOMENT_AIBL_to", names(mps))], 
+                                                               function(x){ x$discovery <- "AIBL"; 
+                                                               x$disorder <- "AD";  
+                                                               return(x)})
+
+mps[grepl("SCZ1_to", names(mps))] <- lapply(mps[grepl("SCZ1_to", names(mps))], 
+                                            function(x){ x$discovery <- "SCZ1"; 
+                                            x$disorder <- "SCZ";  
+                                            return(x)})
+
+mps[grepl("RA_to", names(mps))] <- lapply(mps[grepl("RA_to", names(mps))],
+                                          function(x){ x$discovery <- "RA";
+                                          x$disorder <- x$discovery;  
+                                          return(x)})
+
+mps[grepl("ALS_to", names(mps))] <- lapply(mps[grepl("ALS_to", names(mps))], 
+                                           function(x){ x$discovery <- "ALS";
+                                           x$disorder <- x$discovery;
+                                           return(x)})
+
+mps[grepl("_PD_to", names(mps))] <- lapply(mps[grepl("_PD_to", names(mps))], 
+                                           function(x){ x$discovery <- "PD";
+                                           x$disorder <- x$discovery;
+                                           return(x)})
+
+mps[grepl("SCZ_to", names(mps))] <- lapply(mps[grepl("SCZ_to", names(mps))], 
+                                           function(x){ x$discovery <- "SCZ";
+                                           x$disorder <- x$discovery;
+                                           return(x)})
+
+mps[grepl("AUS_SGPD_AIBL_to", names(mps))] <- lapply(mps[grepl("AUS_SGPD_AIBL_to", names(mps))], 
+                                                     function(x){ x$discovery <- "AUS_SGPD_AIBL"; 
+                                                     x$disorder <- "AD + ALS + PD";  
+                                                     return(x)})
+
+mps.all <- list()
+
+seq.files <- seq(1, no.files, by = 7)
+
+# I am creating data frames with all the scores, per target cohort
+for(i in 1:length(seq.files)){
+  
+  mps.all[[i]] <- mps[seq.files[i]:(seq.files[i]+6)] %>%  reduce(inner_join, by = c("IID", "discovery", "disorder"))
+ 
+}
+
+
+# Just keeping track of the method used to calculate the scores
+mps.all[1:(length(mps.all)/2)] <- lapply(mps.all[1:(length(mps.all)/2)], function(x){x$method = "MOA"; return(x)}) # First half scores are MOA
+mps.all[((length(mps.all)/2)+1):length(mps.all)] <- lapply(mps.all[((length(mps.all)/2)+1):length(mps.all)], function(x){x$method = "MOMENT"; return(x)})
+
+mps.all <- as_tibble(Reduce(rbind, mps.all)) # Tibble with all MOA & MOMENT scores
+
+covs <- read_delim("all_disorders_covariates.txt", delim = "\t") # phenotype file
+
+mps.all <- inner_join(mps.all, covs) %>%
+  rename(target = cohort)
+
+# I have to parse the ADNI phenotype because this is a longitudinal target
+# For prediction need to keep only one time point...I'll chose the oldest time point because it's theoretically the more severe phenotype (so more congruent with AIBL)
+phen <- read_csv("pheno.adni.methyl.csv")
+phen <- phen[which(phen$barcodes %in% mps.all$IID),]
+phen <- phen %>%
+  arrange(rid, desc(examdate)) %>%
+  distinct(rid, .keep_all = T)
+
+# This is a bit messy...
+adni <- mps.all[which(mps.all$target == "ADNI"),] 
+mps.all <- mps.all[-which(mps.all$target == "ADNI"),] 
+adni  <- adni[which(adni$IID %in% phen$barcodes),] 
+
+mps.all <- rbind(mps.all, adni)
+
+# In AddNeuroMed there are four MCI samples that are fine for using in a baseline diagnosis analysis of CTL vs MCI vs AD, but are probably not alright for using in an analysis of converters
+mps.all <- mps.all %>% 
+  filter(!IID %in% c("8667053013_R04C02", "8622007177_R02C02", "8667053127_R04C02", "8667053088_R02C01"))
+
+addneuro <- mps.all[which(mps.all$target == "AddNeuroMed"),]
+
+addneuro$case.control <- recode_factor(addneuro$case.control, "0"="Control", "1"="MCI-MCI", "2"="MCI-AD", "3"="Case")
+
+mps.all <- mps.all[-which(mps.all$IID %in% addneuro$IID),]
+
+mps.all$case.control <- recode_factor(mps.all$case.control, "0"="Control", "1"="Case", "2"="MCI")
+
+mps.all <- rbind(mps.all, addneuro)
+
+# Recode case.control factor
+mps.all <- mps.all %>%
+  mutate(target = fct_relevel(target,"AIBL", "ADNI", "AddNeuroMed", "AUS", "KCL", "NL", "SGPD", "PEG", "SCZ1", "SCZ2", "RA"),
+         case.control = fct_relevel(case.control, "Control", "MCI", "MCI-MCI", "MCI-AD", "Case"),
+         disorder.target = case_when(target %in% c("AUS", "KCL", "NL") ~ "ALS",
+                              target %in% c("SGPD", "PEG") ~ "PD",
+                              target %in% c("AIBL", "ADNI", "AddNeuroMed") ~ "AD",
+                              target %in% c("SCZ1", "SCZ2") ~ "SCZ",
+                              target == "RA" ~ "RA"))
+```
+
+```{r adjust_MPS, echo = T}
+adj.mps <- function(x){
+  x$SCORE_0.5 <- residuals(lm(SCORE_0.5 ~ B + CD4T + CD8T + NK + Mono + Neutro, data = x)) 
+  x$SCORE_0.2 <- residuals(lm(SCORE_0.2 ~ B + CD4T + CD8T + NK + Mono + Neutro, data = x))
+  x$SCORE_0.1 <- residuals(lm(SCORE_0.1 ~ B + CD4T + CD8T + NK + Mono + Neutro, data = x))
+  x$SCORE_0.01 <- residuals(lm(SCORE_0.01 ~ B + CD4T + CD8T + NK + Mono + Neutro, data = x))
+  x$SCORE_0.001 <- residuals(lm(SCORE_0.001 ~ B + CD4T + CD8T + NK + Mono + Neutro, data = x)) 
+  x$SCORE_0.0001 <- residuals(lm(SCORE_0.0001 ~ B + CD4T + CD8T + NK + Mono + Neutro, data = x)) 
+  x$SCORE_0.00001 <- residuals(lm(SCORE_0.00001 ~ B + CD4T + CD8T + NK + Mono + Neutro, data = x)) 
+  return(x)
+}
+
+# I love tidyverse 
+if(params$adjust == "yes"){
+  mps.all <- mps.all %>%
+    group_by(discovery, target, method) %>%
+    group_modify(~adj.mps(.x)) %>%
+    ungroup()
+}
+```
+# Out-of-sample classification 
+## Calculate AUC, using logistic regression models
+
+```{r calculate_AUC_MPS, echo = T, warning=F, message=F, fig.width=15, fig.height= 10}
+# Create data frames to store AUC
+mps.glm <- mps.all %>%
+  filter(discovery != "AUS_SGPD_AIBL" & 
+           discovery != "ALS" & 
+           discovery != "PD" & 
+           discovery != "SCZ" & 
+           discovery != "AD + ALS + PD" &
+           case.control != "MCI" & 
+           case.control != "MCI-MCI" & 
+           case.control != "MCI-AD") %>%
+  nest(-method,  -discovery, -target, -disorder, -disorder.target) %>%
+  mutate(SCORE_0.5 = map(data, ~broom::tidy(glm(case.control ~ SCORE_0.5, data = .,family = binomial(link = "logit")))),
+         SCORE_0.2 = map(data, ~broom::tidy(glm(case.control ~ SCORE_0.2, data = .,family = binomial(link = "logit")))),
+         SCORE_0.1 = map(data, ~broom::tidy(glm(case.control ~ SCORE_0.1, data = .,family = binomial(link = "logit")))),
+         SCORE_0.01 = map(data, ~broom::tidy(glm(case.control ~ SCORE_0.01, data = .,family = binomial(link = "logit")))),
+         SCORE_0.001 = map(data, ~broom::tidy(glm(case.control ~ SCORE_0.001, data = .,family = binomial(link = "logit")))),
+         SCORE_0.0001 = map(data, ~broom::tidy(glm(case.control ~ SCORE_0.0001, data = .,family = binomial(link = "logit")))),
+         SCORE_0.00001 = map(data, ~broom::tidy(glm(case.control ~ SCORE_0.00001, data = .,family = binomial(link = "logit")))),
+         p_SCORE_0.5 = map(SCORE_0.5, "p.value"),
+         p_SCORE_0.2 = map(SCORE_0.2, "p.value"),
+         p_SCORE_0.1 = map(SCORE_0.1, "p.value"),
+         p_SCORE_0.01 = map(SCORE_0.01, "p.value"),
+         p_SCORE_0.001 = map(SCORE_0.001, "p.value"),
+         p_SCORE_0.0001 = map(SCORE_0.0001, "p.value"),
+         p_SCORE_0.00001 = map(SCORE_0.00001, "p.value"),
+         auc_0.5 = map(data, ~roc(droplevels(.x$case.control), .x$SCORE_0.5)),
+         auc_0.2 = map(data, ~roc(droplevels(.x$case.control), .x$SCORE_0.2)),
+         auc_0.1 = map(data, ~roc(droplevels(.x$case.control), .x$SCORE_0.1)),
+         auc_0.01 = map(data, ~roc(droplevels(.x$case.control), .x$SCORE_0.01)),
+         auc_0.001 = map(data, ~roc(droplevels(.x$case.control), .x$SCORE_0.001)),
+         auc_0.0001 = map(data, ~roc(droplevels(.x$case.control), .x$SCORE_0.0001)),
+         auc_0.00001 = map(data, ~roc(droplevels(.x$case.control), .x$SCORE_0.00001)))
+
+df.auc <- inner_join(data.frame("target" = rep(mps.glm$target, 7),
+                               "discovery" = rep(mps.all %>%
+                                                   filter(discovery != "AUS_SGPD_AIBL" & 
+                                                            discovery != "ALS" &
+                                                            discovery != "PD" &
+                                                            discovery != "SCZ" &
+                                                            discovery != "AD + ALS + PD" &
+                                                            case.control != "MCI" &
+                                                            case.control != "MCI-MCI" &
+                                                            case.control != "MCI-AD") %>%
+                                                   nest(-target, -method, -discovery,  -disorder.target) %>%
+                                                   pull(discovery), 7),
+                               "method" = rep(mps.glm$method, 7),
+                               "disorder" = rep(mps.glm$disorder, 7),
+                               "disorder.target" = rep(mps.glm$disorder.target, 7),
+                               "SCORE" = c(rep("p < 0.5", 100),
+                                           rep("p < 0.2", 100),
+                                           rep("p < 0.1", 100),
+                                           rep("p < 0.01", 100),
+                                           rep("p < 1x10-3", 100),
+                                           rep("p < 1x10-4", 100),
+                                           rep("p < 1x10-5", 100)),
+                               "p.val" = c(paste("p = ", 
+                                                 formatC(mps.glm %>%
+                                                           unnest(p_SCORE_0.5) %>%
+                                                           pull(p_SCORE_0.5) %>% # Next I am only keeping the even indices, because I am not keeping intercept
+                                                           .[seq(2, length(.), by = 2)], format = "e", digits = 1), sep=""),
+                                           paste("p = ", 
+                                                 formatC(mps.glm %>%
+                                                           unnest(p_SCORE_0.2) %>%
+                                                           pull(p_SCORE_0.2) %>% 
+                                                           .[seq(2, length(.), by = 2)], format = "e", digits = 1), sep=""),
+                                           paste("p = ", 
+                                                 formatC(mps.glm %>%
+                                                           unnest(p_SCORE_0.1) %>%
+                                                           pull(p_SCORE_0.1) %>% 
+                                                           .[seq(2, length(.), by = 2)], format = "e", digits = 1), sep=""),
+                                           paste("p = ", 
+                                                 formatC(mps.glm %>%
+                                                           unnest(p_SCORE_0.01) %>%
+                                                           pull(p_SCORE_0.01) %>% 
+                                                           .[seq(2, length(.), by = 2)], format = "e", digits = 1), sep=""),
+                                           paste("p = ", 
+                                                 formatC(mps.glm %>%
+                                                           unnest(p_SCORE_0.001) %>%
+                                                           pull(p_SCORE_0.001) %>% 
+                                                           .[seq(2, length(.), by = 2)], format = "e", digits = 1), sep=""),
+                                           paste("p = ", 
+                                                 formatC(mps.glm %>%
+                                                           unnest(p_SCORE_0.0001) %>%
+                                                           pull(p_SCORE_0.0001) %>% 
+                                                           .[seq(2, length(.), by = 2)], format = "e", digits = 1), sep=""),
+                                           
+                                           paste("p = ", 
+                                                 formatC(mps.glm %>%
+                                                           unnest(p_SCORE_0.00001) %>%
+                                                           pull(p_SCORE_0.00001) %>% 
+                                                           .[seq(2, length(.), by = 2)], format = "e", digits = 1), sep="")),
+                               
+                               "AUC" = c(round(unlist(lapply(mps.glm$auc_0.5, auc)), 2),
+                                         round(unlist(lapply(mps.glm$auc_0.2, auc)), 2),
+                                         round(unlist(lapply(mps.glm$auc_0.1, auc)), 2),
+                                         round(unlist(lapply(mps.glm$auc_0.01, auc)), 2),
+                                         round(unlist(lapply(mps.glm$auc_0.001, auc)), 2),
+                                         round(unlist(lapply(mps.glm$auc_0.0001, auc)), 2),
+                                         round(unlist(lapply(mps.glm$auc_0.00001, auc)), 2)),
+                               
+                               "CI95_1" = c(round(unlist(lapply(mps.glm$auc_0.5, ci.auc)), 2) %>%
+                                              .[seq(1, length(.), by = 3)],
+                                         round(unlist(lapply(mps.glm$auc_0.2, ci.auc)), 2) %>%
+                                              .[seq(1, length(.), by = 3)],
+                                         round(unlist(lapply(mps.glm$auc_0.1, ci.auc)), 2) %>%
+                                              .[seq(1, length(.), by = 3)],
+                                         round(unlist(lapply(mps.glm$auc_0.01, ci.auc)), 2) %>%
+                                              .[seq(1, length(.), by = 3)],
+                                         round(unlist(lapply(mps.glm$auc_0.001, ci.auc)), 2) %>%
+                                              .[seq(1, length(.), by = 3)],
+                                         round(unlist(lapply(mps.glm$auc_0.0001, ci.auc)), 2) %>%
+                                              .[seq(1, length(.), by = 3)],
+                                         round(unlist(lapply(mps.glm$auc_0.00001, ci.auc)), 2) %>%
+                                              .[seq(1, length(.), by = 3)]),
+                               
+                               "CI95_2" = c(round(unlist(lapply(mps.glm$auc_0.5, ci.auc)), 2) %>%
+                                              .[seq(3, length(.), by = 3)],
+                                         round(unlist(lapply(mps.glm$auc_0.2, ci.auc)), 2) %>%
+                                              .[seq(3, length(.), by = 3)],
+                                         round(unlist(lapply(mps.glm$auc_0.1, ci.auc)), 2) %>%
+                                              .[seq(3, length(.), by = 3)],
+                                         round(unlist(lapply(mps.glm$auc_0.01, ci.auc)), 2) %>%
+                                              .[seq(3, length(.), by = 3)],
+                                         round(unlist(lapply(mps.glm$auc_0.001, ci.auc)), 2) %>%
+                                              .[seq(3, length(.), by = 3)],
+                                         round(unlist(lapply(mps.glm$auc_0.0001, ci.auc)), 2) %>%
+                                              .[seq(3, length(.), by = 3)],
+                                         round(unlist(lapply(mps.glm$auc_0.00001, ci.auc)), 2) %>%
+                                              .[seq(3, length(.), by = 3)])
+                               ),
+
+ data.frame("m" = c(paste("m = ", prettyNum(mps[grepl("MOA_AIBL_to", names(mps))][[3]]$CNT_SCORE_0.5[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOA_AIBL_to", names(mps))][[2]]$CNT_SCORE_0.2[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOA_AIBL_to", names(mps))][[1]]$CNT_SCORE_0.1[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOA_AIBL_to", names(mps))][[4]]$CNT_SCORE_0.01[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOA_AIBL_to", names(mps))][[5]]$CNT_SCORE_0.001[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOA_AIBL_to", names(mps))][[6]]$CNT_SCORE_0.0001[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOA_AIBL_to", names(mps))][[7]]$CNT_SCORE_0.00001[1], big.mark = ","), sep = ""),
+                                
+                                paste("m = ", prettyNum(mps[grepl("MOMENT_AIBL_to", names(mps))][[3]]$CNT_SCORE_0.5[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOMENT_AIBL_to", names(mps))][[2]]$CNT_SCORE_0.2[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOMENT_AIBL_to", names(mps))][[1]]$CNT_SCORE_0.1[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOMENT_AIBL_to", names(mps))][[4]]$CNT_SCORE_0.01[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOMENT_AIBL_to", names(mps))][[5]]$CNT_SCORE_0.001[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOMENT_AIBL_to", names(mps))][[6]]$CNT_SCORE_0.0001[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOMENT_AIBL_to", names(mps))][[7]]$CNT_SCORE_0.00001[1], big.mark = ","), sep = ""),
+                                
+                                paste("m = ", prettyNum(mps[grepl("MOA_AUS_to", names(mps))][[3]]$CNT_SCORE_0.5[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOA_AUS_to", names(mps))][[2]]$CNT_SCORE_0.2[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOA_AUS_to", names(mps))][[1]]$CNT_SCORE_0.1[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOA_AUS_to", names(mps))][[4]]$CNT_SCORE_0.01[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOA_AUS_to", names(mps))][[5]]$CNT_SCORE_0.001[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOA_AUS_to", names(mps))][[6]]$CNT_SCORE_0.0001[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOA_AUS_to", names(mps))][[7]]$CNT_SCORE_0.00001[1], big.mark = ","), sep = ""),
+                                
+                                 paste("m = ", prettyNum(mps[grepl("MOMENT_AUS_to", names(mps))][[3]]$CNT_SCORE_0.5[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOMENT_AUS_to", names(mps))][[2]]$CNT_SCORE_0.2[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOMENT_AUS_to", names(mps))][[1]]$CNT_SCORE_0.1[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOMENT_AUS_to", names(mps))][[4]]$CNT_SCORE_0.01[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOMENT_AUS_to", names(mps))][[5]]$CNT_SCORE_0.001[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOMENT_AUS_to", names(mps))][[6]]$CNT_SCORE_0.0001[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOMENT_AUS_to", names(mps))][[7]]$CNT_SCORE_0.00001[1], big.mark = ","), sep = ""),
+                                
+                                paste("m = ", prettyNum(mps[grepl("MOA_SGPD_to", names(mps))][[3]]$CNT_SCORE_0.5[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOA_SGPD_to", names(mps))][[2]]$CNT_SCORE_0.2[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOA_SGPD_to", names(mps))][[1]]$CNT_SCORE_0.1[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOA_SGPD_to", names(mps))][[4]]$CNT_SCORE_0.01[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOA_SGPD_to", names(mps))][[5]]$CNT_SCORE_0.001[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOA_SGPD_to", names(mps))][[6]]$CNT_SCORE_0.0001[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOA_SGPD_to", names(mps))][[7]]$CNT_SCORE_0.00001[1], big.mark = ","), sep = ""),
+                                
+                                paste("m = ", prettyNum(mps[grepl("MOMENT_SGPD_to", names(mps))][[3]]$CNT_SCORE_0.5[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOMENT_SGPD_to", names(mps))][[2]]$CNT_SCORE_0.2[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOMENT_SGPD_to", names(mps))][[1]]$CNT_SCORE_0.1[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOMENT_SGPD_to", names(mps))][[4]]$CNT_SCORE_0.01[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOMENT_SGPD_to", names(mps))][[5]]$CNT_SCORE_0.001[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOMENT_SGPD_to", names(mps))][[6]]$CNT_SCORE_0.0001[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOMENT_SGPD_to", names(mps))][[7]]$CNT_SCORE_0.00001[1], big.mark = ","), sep = ""),
+                          
+                                paste("m = ", prettyNum(mps[grepl("MOA_SCZ1_to", names(mps))][[3]]$CNT_SCORE_0.5[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOA_SCZ1_to", names(mps))][[2]]$CNT_SCORE_0.2[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOA_SCZ1_to", names(mps))][[1]]$CNT_SCORE_0.1[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOA_SCZ1_to", names(mps))][[4]]$CNT_SCORE_0.01[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOA_SCZ1_to", names(mps))][[5]]$CNT_SCORE_0.001[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOA_SCZ1_to", names(mps))][[6]]$CNT_SCORE_0.0001[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOA_SCZ1_to", names(mps))][[7]]$CNT_SCORE_0.00001[1], big.mark = ","), sep = ""),
+                                
+                                paste("m = ", prettyNum(mps[grepl("MOMENT_SCZ1_to", names(mps))][[3]]$CNT_SCORE_0.5[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOMENT_SCZ1_to", names(mps))][[2]]$CNT_SCORE_0.2[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOMENT_SCZ1_to", names(mps))][[1]]$CNT_SCORE_0.1[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOMENT_SCZ1_to", names(mps))][[4]]$CNT_SCORE_0.01[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOMENT_SCZ1_to", names(mps))][[5]]$CNT_SCORE_0.001[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOMENT_SCZ1_to", names(mps))][[6]]$CNT_SCORE_0.0001[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOMENT_SCZ1_to", names(mps))][[7]]$CNT_SCORE_0.00001[1], big.mark = ","), sep = ""),
+                                
+                                paste("m = ", prettyNum(mps[grepl("MOA_RA_to", names(mps))][[3]]$CNT_SCORE_0.5[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOA_RA_to", names(mps))][[2]]$CNT_SCORE_0.2[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOA_RA_to", names(mps))][[1]]$CNT_SCORE_0.1[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOA_RA_to", names(mps))][[4]]$CNT_SCORE_0.01[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOA_RA_to", names(mps))][[5]]$CNT_SCORE_0.001[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOA_RA_to", names(mps))][[6]]$CNT_SCORE_0.0001[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOA_RA_to", names(mps))][[7]]$CNT_SCORE_0.00001[1], big.mark = ","), sep = ""),
+                        
+                                paste("m = ", prettyNum(mps[grepl("MOMENT_RA_to", names(mps))][[3]]$CNT_SCORE_0.5[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOMENT_RA_to", names(mps))][[2]]$CNT_SCORE_0.2[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOMENT_RA_to", names(mps))][[1]]$CNT_SCORE_0.1[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOMENT_RA_to", names(mps))][[4]]$CNT_SCORE_0.01[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOMENT_RA_to", names(mps))][[5]]$CNT_SCORE_0.001[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOMENT_RA_to", names(mps))][[6]]$CNT_SCORE_0.0001[1], big.mark = ","), sep = ""),
+                                paste("m = ", prettyNum(mps[grepl("MOMENT_RA_to", names(mps))][[7]]$CNT_SCORE_0.00001[1], big.mark = ","), sep = "")),
+                                
+                        "SCORE" = rep(c("p < 0.5", "p < 0.2", "p < 0.1","p < 0.01", "p < 1x10-3", "p < 1x10-4","p < 1x10-5")),
+                        "discovery" = c("AIBL", "AIBL", "AUS", "AUS", "SGPD", "SGPD", "SCZ1", "SCZ1", "RA", "RA"),
+                        "method" = c(rep(c(rep("MOA", 7), rep("MOMENT", 7)), 5)))) 
+
+df.auc$SCORE <- fct_relevel(df.auc$SCORE, "p < 0.5", "p < 0.2", "p < 0.1","p < 0.01", "p < 1x10-3", "p < 1x10-4","p < 1x10-5")
+df.auc$discovery <- fct_relevel(df.auc$discovery, "AIBL", "AUS", "SGPD", "SCZ1", "RA")
+df.auc$disorder.target <- fct_relevel(df.auc$disorder.target, "AD", "ALS", "PD", "SCZ", "RA")
+df.auc$method <- fct_relevel(df.auc$method, "MOA", "MOMENT")
+
+if(params$adjust == "no"){
+  write_csv(df.auc, "auc_mps_within_between_disorders.csv")
+  }else{
+  write_csv(df.auc, "auc_mps_adjusted_within_between_disorders.csv")
+}
+```
+
+```{r plot_AUC, echo = T, fig.width=35, fig.height=15}
+# Plot max AUC for each discovery/target cohort ----
+myColors <- c(pal_jco()(5))
+names(myColors) <- c("AD", "ALS", "PD", "SCZ", "RA")
+
+# MAX AUC
+max.moa <- df.auc %>% 
+  group_by(discovery, method, target) %>% 
+  slice(which.max(AUC)) %>%
+  ungroup() %>%
+  filter(method == "MOA") %>%
+  mutate(name = reorder_within(target, AUC, discovery)) %>%
+  ggplot(aes(x = name,
+             y = AUC, 
+             fill = disorder.target)) + 
+  geom_bar(stat = "identity", 
+           position = position_dodge(0.8)) + 
+  scale_x_reordered() + 
+  facet_wrap(~discovery + disorder, 
+             scales="free_y", 
+             ncol=5) +
+  coord_flip() + 
+  #geom_text(aes(x = target, y = 1, label = p.val, fontface = "bold"),
+  #          col = 'black', size = 4) + 
+  geom_text(aes(x = name, y = CI95_2 + 0.04, 
+                label = AUC, fontface = "bold"),
+            col = 'black', size = 4,
+            position = position_dodge(0.8)) + 
+  geom_text(aes(x = name, y = 1, label = m),
+            col = 'black', size = 4, fontface = "bold", 
+            position = position_dodge(0.8)) + 
+  geom_hline(yintercept = 0.5, 
+             col = "red", 
+             lty = "dashed") +
+  geom_errorbar(aes(ymin = CI95_1, 
+                    ymax = CI95_2),
+                position = position_dodge(0.8),
+                size = 0.5,
+                width = 0.4) + 
+  scale_fill_manual(values = myColors, name = "Disorder") +
+  xlab("Target cohort") +
+  ylab("") + 
+  ylim(c(0, 1.05)) +
+  theme_bw() + 
+  theme(axis.text = element_text( size = 16),
+        axis.title = element_text(size = 20, face = "bold"),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        legend.text = element_text(size = 20),
+        legend.title = element_text(size = 20, face = "bold"),
+        legend.position = "bottom",
+        strip.text = element_text(size = 18))
+
+
+max.mom <- df.auc %>% 
+  group_by(discovery, method, target) %>% 
+  slice(which.max(AUC)) %>%
+  ungroup() %>%
+  filter(method == "MOMENT") %>%
+  mutate(name = reorder_within(target, AUC, discovery)) %>%
+  ggplot(aes(x = name,
+             y = AUC, 
+             fill = disorder.target)) + 
+  geom_bar(stat = "identity", 
+           position = position_dodge(0.8)) + 
+  scale_x_reordered() + 
+  facet_wrap(~discovery + disorder, 
+             scales="free_y", 
+             ncol=5) +
+  coord_flip() + 
+  #geom_text(aes(x = target, y = 1, label = p.val, fontface = "bold"),
+  #          col = 'black', size = 4) + 
+  geom_text(aes(x = name, y = CI95_2 + 0.04, 
+                label = AUC, fontface = "bold"),
+            col = 'black', size = 4,
+            position = position_dodge(0.8)) + 
+  geom_text(aes(x = name, y = 1, label = m),
+            col = 'black', size = 4, fontface = "bold", 
+            position = position_dodge(0.8)) + 
+  geom_hline(yintercept = 0.5, 
+             col = "red", 
+             lty = "dashed") +
+  geom_errorbar(aes(ymin = CI95_1, 
+                    ymax = CI95_2),
+                position = position_dodge(0.8),
+                size = 0.5,
+                width = 0.4) + 
+  scale_fill_manual(values = myColors, name = "Disorder") +
+  xlab("Target cohort") +
+  ylim(c(0, 1.05)) +
+  theme_bw() + 
+  theme(axis.text = element_text(size = 16),
+        axis.title = element_text(size = 20, face = "bold"),
+        legend.position = "none",
+        strip.text = element_text(size = 18))
+
+legend.max <- get_legend(max.moa)
+
+max.moa <- max.moa + theme(legend.position = "none")
+
+plot_grid(plot_grid(max.moa, max.mom, labels = "", nrow = 2, label_size = 20), legend.max,  nrow = 2, rel_heights = c(0.9, 0.1))
+
+if(params$adjust == "no"){
+  ggsave("max_MPS_AUC.png", width = 35, height = 15)
+}else{
+  ggsave("max_MPS_adjusted_AUC.png", width = 35, height = 15)
+}
+
+# AUC p < 1x10-4
+m.moa.score <- df.auc %>% 
+  filter(method == "MOA" & SCORE == "p < 1x10-4") %>%
+  mutate(name = reorder_within(target, AUC, discovery)) %>%
+  group_by(target, method) %>%
+  arrange(desc(AUC)) %>%
+  ungroup() %>%
+  distinct(m, .keep_all = T) 
+
+asterisk.moa.score <- df.auc %>% 
+  filter(method == "MOA" & SCORE == "p < 1x10-4") %>%
+  mutate(name = reorder_within(target, AUC, discovery)) %>%
+  mutate(p.val = as.character(p.val),
+         p.val = as.numeric(sapply(strsplit(p.val, "="), "[", 2)),
+         star = ifelse(p.val < 0.05/nrow(df.auc),
+                       yes = "*",
+                       no = NA)) 
+
+moa.score <- df.auc %>% 
+  filter(method == "MOA" & SCORE == "p < 1x10-4") %>%
+  mutate(name = reorder_within(target, AUC, discovery)) %>%
+  ggplot(aes(x = name,
+             y = AUC, 
+             fill = disorder.target)) + 
+  geom_bar(stat = "identity", 
+           position = position_dodge(0.8)) + 
+  scale_x_reordered() + 
+  facet_wrap(~discovery + disorder, 
+             scales="free_y", 
+             ncol=5) +
+  coord_flip() + 
+  geom_text(aes(x = name, y = CI95_2 + 0.06, label = AUC, fontface = "bold"),
+            col = 'black', size = 5,
+            position = position_dodge(0.9)) + 
+  geom_text(data = m.moa.score, aes(x = name, y = 1.05, label = m),
+            col = 'black', size = 5, fontface = "bold", 
+            position = position_dodge(0.9), inherit.aes = F) + 
+  geom_text(data = asterisk.moa.score, aes(x = name, y = CI95_2 + 0.13, label = star),
+            col = 'black', size = 6, fontface = "bold", 
+            position = position_dodge(0.9), inherit.aes = F) + 
+  geom_hline(yintercept = 0.5, 
+             col = "red", 
+             lty = "dashed") +
+  geom_errorbar(aes(ymin = CI95_1, 
+                    ymax = CI95_2),
+                position = position_dodge(0.9),
+                size = 0.5,
+                width = 0.4,
+                col = "black") + 
+  scale_fill_manual(values = myColors, name = "Disorder") +
+  xlab("Target cohort") +
+  ylab("") + 
+  ylim(c(0, 1.1)) + 
+  theme_bw() +
+  theme(axis.text = element_text( size = 14),
+        axis.title = element_text(size = 20, face = "bold"),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        legend.text = element_text(size = 24),
+        legend.title = element_text(size = 24, face = "bold"),
+        legend.position = "bottom",
+        strip.text = element_text(size = 18))
+
+m.mom.score <- df.auc %>% 
+  filter(method == "MOMENT" & SCORE == "p < 1x10-4") %>%
+  mutate(name = reorder_within(target, AUC, discovery)) %>%
+  group_by(target, method) %>%
+  arrange(desc(AUC)) %>%
+  ungroup() %>%
+  distinct(m, .keep_all = T)
+
+asterisk.mom.score <- df.auc %>% 
+  filter(method == "MOMENT" & SCORE == "p < 1x10-4") %>%
+  mutate(name = reorder_within(target, AUC, discovery)) %>%
+  mutate(p.val = as.character(p.val),
+         p.val = as.numeric(sapply(strsplit(p.val, "="), "[", 2)),
+         star = ifelse(p.val < 0.05/nrow(df.auc),
+                       yes = "*",
+                       no = NA)) 
+
+
+mom.score <- df.auc %>% 
+  filter(method == "MOMENT" & SCORE == "p < 1x10-4") %>%
+  mutate(name = reorder_within(target, AUC, discovery)) %>%
+  ggplot(aes(x = name,
+             y = AUC, 
+             fill = disorder.target)) + 
+  geom_bar(stat = "identity", 
+           position = position_dodge(0.8)) + 
+  scale_x_reordered() + 
+  facet_wrap(~discovery + disorder, 
+             scales="free_y", 
+             ncol=5) +
+  coord_flip() + 
+  geom_text(aes(x = name, y = CI95_2 + 0.06, label = AUC, fontface = "bold"),
+            col = 'black', size = 5,
+            position = position_dodge(0.9)) + 
+  geom_text(data = m.mom.score, aes(x = name, y = 1.05, label = m),
+            col = 'black', size = 5, fontface = "bold", 
+            position = position_dodge(0.9), inherit.aes = F) + 
+  geom_text(data = asterisk.mom.score, aes(x = name, y = CI95_2 + 0.13, label = star),
+            col = 'black', size = 6, fontface = "bold", 
+            position = position_dodge(0.9), inherit.aes = F) + 
+  geom_hline(yintercept = 0.5, 
+             col = "red", 
+             lty = "dashed") +
+  geom_errorbar(aes(ymin = CI95_1, 
+                    ymax = CI95_2),
+                position = position_dodge(0.9),
+                size = 0.5,
+                width = 0.4,
+                col = "black") + 
+  scale_fill_manual(values = myColors, name = "Disorder") +
+  xlab("Target cohort") +
+  ylim(c(0, 1.1)) + 
+  theme_bw() +
+  theme(axis.text = element_text( size = 14),
+        axis.title = element_text(size = 20, face = "bold"),
+        legend.position = "none",
+        strip.text = element_text(size = 18))
+
+moa.score <- moa.score + theme(legend.position = "none")
+
+plot_grid(plot_grid(moa.score, mom.score, labels = "", nrow = 2, label_size = 20), legend.max,  nrow = 2, rel_heights = c(0.9, 0.1))
+
+if(params$adjust == "no"){
+  ggsave("SCORE_0.0001_MPS_AUC.png", width = 35, height = 15)
+}else{
+  ggsave("SCORE_0.0001_MPS_adjusted_AUC.png", width = 35, height = 15)
+}
+```
