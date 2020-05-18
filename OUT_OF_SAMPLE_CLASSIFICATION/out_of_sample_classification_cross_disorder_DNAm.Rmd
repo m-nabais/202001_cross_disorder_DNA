@@ -31,7 +31,7 @@ library(RColorBrewer)
 
 > First I need to parse the MOA & MOMENT results:
 
-```{r parse_data, echo = T}
+```{r parse_data, echo = T, eval = F}
 # Parse data ----
 myfiles <- list.files(path = "./mps", pattern = "*.profile", full.names = T)
 #length(myfiles)
@@ -157,6 +157,14 @@ covs <- read_delim("all_disorders_covariates.txt", delim = "\t") # phenotype fil
 mps.all <- inner_join(mps.all, covs) %>%
   rename(target = cohort)
 
+sgpd <- read.table("SGPD_EURunrel_BATCH-info.txt", header = T, fill = T) # I need to recode the SGPD IDs to post on GitHub
+
+mps.all <- left_join(mps.all, sgpd[,c("FID", "Sample.ID")]) 
+
+mps.all[which(mps.all$target == "SGPD"),]$IID <- as.character(mps.all[which(mps.all$target == "SGPD"),]$Sample.ID)
+
+mps.all <- mps.all[,-ncol(mps.all)] # remove the sample ID, no longer needed
+
 # I have to parse the ADNI phenotype because this is a longitudinal target
 # For prediction need to keep only one time point...I'll chose the oldest time point because it's theoretically the more severe phenotype (so more congruent with AIBL)
 phen <- read_csv("pheno.adni.methyl.csv")
@@ -195,9 +203,17 @@ mps.all <- mps.all %>%
                               target %in% c("AIBL", "ADNI", "AddNeuroMed") ~ "AD",
                               target %in% c("SCZ1", "SCZ2") ~ "SCZ",
                               target == "RA" ~ "RA"))
+
+mps <- lapply(mps, function(x){x <- x[,-1]; return(x)}) # I am just removing ID columns to be safe. Only need this object for probe numbers!
+
+save(mps, file = "all_disorders_mps.Robject")
+save(mps.all, file="all_disorders_mps_covariates.Robject")
 ```
 
 ```{r adjust_MPS, echo = T}
+load("all_disorders_mps.Robject")
+load("all_disorders_mps_covariates.Robject")
+
 adj.mps <- function(x){
   x$SCORE_0.5 <- residuals(lm(SCORE_0.5 ~ B + CD4T + CD8T + NK + Mono + Neutro, data = x)) 
   x$SCORE_0.2 <- residuals(lm(SCORE_0.2 ~ B + CD4T + CD8T + NK + Mono + Neutro, data = x))
@@ -220,7 +236,7 @@ if(params$adjust == "yes"){
 # Out-of-sample classification 
 ## Calculate AUC, using logistic regression models
 
-```{r calculate_AUC_MPS, echo = T, warning=F, message=F, fig.width=15, fig.height= 10}
+```{r calculate_AUC_MPS, echo = T, warning=F, message=F, fig.width=35, fig.height= 15}
 # Create data frames to store AUC
 mps.glm <- mps.all %>%
   filter(discovery != "AUS_SGPD_AIBL" & 
