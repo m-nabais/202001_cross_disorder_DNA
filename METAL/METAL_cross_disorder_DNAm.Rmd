@@ -1,0 +1,1191 @@
+---
+title: "METAL - meta-analyses cross-disorder DNAm (BRAIN-MEND)"
+author: "[Marta Nabais](https://github.com/m-nabais)"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+mail: "m.nabais@uq.edu.au"
+twitter: "RandomWalkin"
+github: "m-nabais"
+output:
+  epuRate::PCTG:
+    toc: TRUE
+    number_sections: FALSE
+    code_folding: "hide"
+---
+
+```{r libraries, echo=FALSE, message=FALSE, warning=FALSE}
+# You need these libraries to run this template:
+library(rmarkdown)    # install.packages("rmarkdown") 
+library(epuRate)      # devtools::install_github("holtzy/epuRate", force=TRUE)
+library(data.table)
+library(tidyverse)
+library(cowplot)
+library(ggpubr)
+library(ggrepel)
+```
+
+# Data parsing 
+> First I need to parse the MOA & MOMENT results:
+
+## MOA
+```{r parse_data_MOA, echo=T, message=F, warning=F, }
+# Data preparation for meta-analysis of AD + ALS + PD
+dir.create("ALS_PD_AD", showWarnings = F)
+myfiles <- list.files(path = "./", pattern = "*.moa")
+files <- lapply(myfiles, fread, data.table = F)
+
+myfiles.ad.als.pd <- files[-c(6,7,8)]
+
+names(myfiles.ad.als.pd) <- myfiles[-c(6,7,8)]
+
+probes.ad.als.pd <- Reduce(intersect, list(myfiles.ad.als.pd[[1]]$Probe, 
+                                           myfiles.ad.als.pd[[2]]$Probe,
+                                           myfiles.ad.als.pd[[3]]$Probe,
+                                           myfiles.ad.als.pd[[4]]$Probe,
+                                           myfiles.ad.als.pd[[5]]$Probe,
+                                           myfiles.ad.als.pd[[6]]$Probe))
+
+for(i in 1:length(myfiles.ad.als.pd)){
+
+    myfiles.ad.als.pd[[i]] <- myfiles.ad.als.pd[[i]][which(myfiles.ad.als.pd[[i]]$Probe %in% probes.ad.als.pd),]
+    rownames(myfiles.ad.als.pd[[i]]) <- myfiles.ad.als.pd[[i]]$Probe
+    myfiles.ad.als.pd[[i]] <- myfiles.ad.als.pd[[i]][probes.ad.als.pd,]
+    fwrite(myfiles.ad.als.pd[[i]], paste("ALS_PD_AD/", names(myfiles.ad.als.pd)[i], sep = ""), quote=F, col.names = T, row.names = F, sep="\t")
+}
+
+
+# Data preparation for meta-analysis of AD + ALS + PD + RA 
+dir.create("ALS_PD_AD_RA", showWarnings = F)
+
+myfiles.ad.als.pd.ra <- files[-c(7,8)]
+
+names(myfiles.ad.als.pd.ra) <- myfiles[-c(7,8)]
+
+probes.ad.als.pd.ra <- Reduce(intersect, list(myfiles.ad.als.pd.ra[[1]]$Probe, 
+                                           myfiles.ad.als.pd.ra[[2]]$Probe,
+                                           myfiles.ad.als.pd.ra[[3]]$Probe,
+                                           myfiles.ad.als.pd.ra[[4]]$Probe,
+                                           myfiles.ad.als.pd.ra[[5]]$Probe,
+                                           myfiles.ad.als.pd.ra[[6]]$Probe,
+                                           myfiles.ad.als.pd.ra[[7]]$Probe))
+
+
+for(i in 1:length(myfiles.ad.als.pd.ra)){
+  
+  myfiles.ad.als.pd.ra[[i]] <- myfiles.ad.als.pd.ra[[i]][which(myfiles.ad.als.pd.ra[[i]]$Probe %in% probes.ad.als.pd.ra),]
+  rownames(myfiles.ad.als.pd.ra[[i]]) <- myfiles.ad.als.pd.ra[[i]]$Probe
+  myfiles.ad.als.pd.ra[[i]] <- myfiles.ad.als.pd.ra[[i]][probes.ad.als.pd.ra,]
+  fwrite(myfiles.ad.als.pd.ra[[i]], paste("ALS_PD_AD_RA/", names(myfiles.ad.als.pd.ra)[i], sep = ""), quote=F, col.names = T, row.names = F, sep="\t")
+}
+
+# Data preparation for meta-analysis of AD + ALS + PD + SCZ
+dir.create("ALS_PD_AD_SCZ", showWarnings = F)
+
+myfiles.ad.als.pd.scz<- files[-6]
+
+names(myfiles.ad.als.pd.scz) <- myfiles[-6]
+
+probes.ad.als.pd.scz <- Reduce(intersect, list(myfiles.ad.als.pd.scz[[1]]$Probe, 
+                                              myfiles.ad.als.pd.scz[[2]]$Probe,
+                                              myfiles.ad.als.pd.scz[[3]]$Probe,
+                                              myfiles.ad.als.pd.scz[[4]]$Probe,
+                                              myfiles.ad.als.pd.scz[[5]]$Probe,
+                                              myfiles.ad.als.pd.scz[[6]]$Probe,
+                                              myfiles.ad.als.pd.scz[[7]]$Probe,
+                                              myfiles.ad.als.pd.scz[[8]]$Probe))
+
+
+for(i in 1:length(myfiles.ad.als.pd.scz)){
+  
+  myfiles.ad.als.pd.scz[[i]] <- myfiles.ad.als.pd.scz[[i]][which(myfiles.ad.als.pd.scz[[i]]$Probe %in% probes.ad.als.pd.scz),]
+  rownames(myfiles.ad.als.pd.scz[[i]]) <- myfiles.ad.als.pd.scz[[i]]$Probe
+  myfiles.ad.als.pd.scz[[i]] <- myfiles.ad.als.pd.scz[[i]][probes.ad.als.pd.scz,]
+  fwrite(myfiles.ad.als.pd.scz[[i]], paste("ALS_PD_AD_SCZ/", names(myfiles.ad.als.pd.scz)[i], sep = ""), quote=F, col.names = T, row.names = F, sep="\t")
+}
+
+# Data preparation for meta-analysis within ALS
+dir.create("within_ALS", showWarnings = F)
+
+myfiles.als<- files[c(1,3,4)]
+
+names(myfiles.als) <- myfiles[c(1,3,4)]
+
+probes.als<- Reduce(intersect, list(myfiles.als[[1]]$Probe, 
+                                              myfiles.als[[2]]$Probe,
+                                              myfiles.als[[3]]$Probe))
+
+
+for(i in 1:length(myfiles.als)){
+  
+  myfiles.als[[i]] <- myfiles.als[[i]][which(myfiles.als[[i]]$Probe %in% probes.als),]
+  rownames(myfiles.als[[i]]) <- myfiles.als[[i]]$Probe
+  myfiles.als[[i]] <- myfiles.als[[i]][probes.als,]
+  fwrite(myfiles.als[[i]], paste("within_ALS/", names(myfiles.als)[i], sep = ""), quote=F, col.names = T, row.names = F, sep="\t")
+}
+
+# Data preparation for meta-analysis within PD
+dir.create("within_PD", showWarnings = F)
+
+myfiles.pd<- files[c(5,9)]
+
+names(myfiles.pd) <- myfiles[c(5,9)]
+
+probes.pd<- Reduce(intersect, list(myfiles.pd[[1]]$Probe, 
+                                    myfiles.pd[[2]]$Probe))
+
+
+for(i in 1:length(myfiles.pd)){
+  
+  myfiles.pd[[i]] <- myfiles.pd[[i]][which(myfiles.pd[[i]]$Probe %in% probes.pd),]
+  rownames(myfiles.pd[[i]]) <- myfiles.pd[[i]]$Probe
+  myfiles.pd[[i]] <- myfiles.pd[[i]][probes.pd,]
+  fwrite(myfiles.pd[[i]], paste("within_PD/", names(myfiles.pd)[i], sep = ""), quote=F, col.names = T, row.names = F, sep="\t")
+}
+
+# Data preparation for meta-analysis within SCZ
+dir.create("within_SCZ", showWarnings = F)
+
+myfiles.scz<- files[c(7,8)]
+
+names(myfiles.scz) <- myfiles[c(7,8)]
+
+probes.scz<- Reduce(intersect, list(myfiles.scz[[1]]$Probe, 
+                                    myfiles.scz[[2]]$Probe))
+
+
+for(i in 1:length(myfiles.scz)){
+  
+  myfiles.scz[[i]] <- myfiles.scz[[i]][which(myfiles.scz[[i]]$Probe %in% probes.scz),]
+  rownames(myfiles.scz[[i]]) <- myfiles.scz[[i]]$Probe
+  myfiles.scz[[i]] <- myfiles.scz[[i]][probes.scz,]
+  fwrite(myfiles.scz[[i]], paste("within_SCZ/", names(myfiles.scz)[i], sep = ""), quote=F, col.names = T, row.names = F, sep="\t")
+}
+
+# Data preparation for meta-analysis between AUS ALS, SGPD PD, AD
+dir.create("within_AUS_SGPD_AIBL", showWarnings = F)
+
+myfiles.aus.sgpd.aibl<- files[c(1,2,9)]
+
+names(myfiles.aus.sgpd.aibl) <- myfiles[c(1,2,9)]
+
+probes.aus.sgpd.aibl<- Reduce(intersect, list(myfiles.aus.sgpd.aibl[[1]]$Probe, 
+                                    myfiles.aus.sgpd.aibl[[2]]$Probe,
+                                    myfiles.aus.sgpd.aibl[[3]]$Probe))
+
+
+for(i in 1:length(myfiles.aus.sgpd.aibl)){
+  
+  myfiles.aus.sgpd.aibl[[i]] <- myfiles.aus.sgpd.aibl[[i]][which(myfiles.aus.sgpd.aibl[[i]]$Probe %in% probes.aus.sgpd.aibl),]
+  rownames(myfiles.aus.sgpd.aibl[[i]]) <- myfiles.aus.sgpd.aibl[[i]]$Probe
+  myfiles.aus.sgpd.aibl[[i]] <- myfiles.aus.sgpd.aibl[[i]][probes.aus.sgpd.aibl,]
+  fwrite(myfiles.aus.sgpd.aibl[[i]], paste("within_AUS_SGPD_AIBL/", names(myfiles.aus.sgpd.aibl)[i], sep = ""), quote=F, col.names = T, row.names = F, sep="\t")
+}
+```
+
+##MOMENT
+
+```{r parse_data_MOMENT, echo = T, warning=F, message=F}
+# Data preparation for meta-analysis of AD + ALS + PD
+myfiles <- list.files(path = "./", pattern = "*.moment") # THIS IS THE DIFFERENCE BETWEEN THIS CHUNK AND THE PREVIOUS ONE
+files <- lapply(myfiles, fread, data.table = F)
+
+myfiles.ad.als.pd <- files[-c(6,7,8)]
+
+names(myfiles.ad.als.pd) <- myfiles[-c(6,7,8)]
+
+probes.ad.als.pd <- Reduce(intersect, list(myfiles.ad.als.pd[[1]]$Probe, 
+                                           myfiles.ad.als.pd[[2]]$Probe,
+                                           myfiles.ad.als.pd[[3]]$Probe,
+                                           myfiles.ad.als.pd[[4]]$Probe,
+                                           myfiles.ad.als.pd[[5]]$Probe,
+                                           myfiles.ad.als.pd[[6]]$Probe))
+
+for(i in 1:length(myfiles.ad.als.pd)){
+
+    myfiles.ad.als.pd[[i]] <- myfiles.ad.als.pd[[i]][which(myfiles.ad.als.pd[[i]]$Probe %in% probes.ad.als.pd),]
+    rownames(myfiles.ad.als.pd[[i]]) <- myfiles.ad.als.pd[[i]]$Probe
+    myfiles.ad.als.pd[[i]] <- myfiles.ad.als.pd[[i]][probes.ad.als.pd,]
+    fwrite(myfiles.ad.als.pd[[i]], paste("ALS_PD_AD/", names(myfiles.ad.als.pd)[i], sep = ""), quote=F, col.names = T, row.names = F, sep="\t")
+}
+
+
+# Data preparation for meta-analysis of AD + ALS + PD + RA 
+myfiles.ad.als.pd.ra <- files[-c(7,8)]
+
+names(myfiles.ad.als.pd.ra) <- myfiles[-c(7,8)]
+
+probes.ad.als.pd.ra <- Reduce(intersect, list(myfiles.ad.als.pd.ra[[1]]$Probe, 
+                                           myfiles.ad.als.pd.ra[[2]]$Probe,
+                                           myfiles.ad.als.pd.ra[[3]]$Probe,
+                                           myfiles.ad.als.pd.ra[[4]]$Probe,
+                                           myfiles.ad.als.pd.ra[[5]]$Probe,
+                                           myfiles.ad.als.pd.ra[[6]]$Probe,
+                                           myfiles.ad.als.pd.ra[[7]]$Probe))
+
+
+for(i in 1:length(myfiles.ad.als.pd.ra)){
+  
+  myfiles.ad.als.pd.ra[[i]] <- myfiles.ad.als.pd.ra[[i]][which(myfiles.ad.als.pd.ra[[i]]$Probe %in% probes.ad.als.pd.ra),]
+  rownames(myfiles.ad.als.pd.ra[[i]]) <- myfiles.ad.als.pd.ra[[i]]$Probe
+  myfiles.ad.als.pd.ra[[i]] <- myfiles.ad.als.pd.ra[[i]][probes.ad.als.pd.ra,]
+  fwrite(myfiles.ad.als.pd.ra[[i]], paste("ALS_PD_AD_RA/", names(myfiles.ad.als.pd.ra)[i], sep = ""), quote=F, col.names = T, row.names = F, sep="\t")
+}
+
+# Data preparation for meta-analysis of AD + ALS + PD + SCZ
+myfiles.ad.als.pd.scz<- files[-6]
+
+names(myfiles.ad.als.pd.scz) <- myfiles[-6]
+
+probes.ad.als.pd.scz<- Reduce(intersect, list(myfiles.ad.als.pd.scz[[1]]$Probe, 
+                                              myfiles.ad.als.pd.scz[[2]]$Probe,
+                                              myfiles.ad.als.pd.scz[[3]]$Probe,
+                                              myfiles.ad.als.pd.scz[[4]]$Probe,
+                                              myfiles.ad.als.pd.scz[[5]]$Probe,
+                                              myfiles.ad.als.pd.scz[[6]]$Probe,
+                                              myfiles.ad.als.pd.scz[[7]]$Probe,
+                                              myfiles.ad.als.pd.scz[[8]]$Probe))
+
+
+for(i in 1:length(myfiles.ad.als.pd.scz)){
+  
+  myfiles.ad.als.pd.scz[[i]] <- myfiles.ad.als.pd.scz[[i]][which(myfiles.ad.als.pd.scz[[i]]$Probe %in% probes.ad.als.pd.scz),]
+  rownames(myfiles.ad.als.pd.scz[[i]]) <- myfiles.ad.als.pd.scz[[i]]$Probe
+  myfiles.ad.als.pd.scz[[i]] <- myfiles.ad.als.pd.scz[[i]][probes.ad.als.pd.scz,]
+  fwrite(myfiles.ad.als.pd.scz[[i]], paste("ALS_PD_AD_SCZ/", names(myfiles.ad.als.pd.scz)[i], sep = ""), quote=F, col.names = T, row.names = F, sep="\t")
+}
+
+# Data preparation for meta-analysis within ALS
+myfiles.als<- files[c(1,3,4)]
+
+names(myfiles.als) <- myfiles[c(1,3,4)]
+
+probes.als<- Reduce(intersect, list(myfiles.als[[1]]$Probe, 
+                                              myfiles.als[[2]]$Probe,
+                                              myfiles.als[[3]]$Probe))
+
+
+for(i in 1:length(myfiles.als)){
+  
+  myfiles.als[[i]] <- myfiles.als[[i]][which(myfiles.als[[i]]$Probe %in% probes.als),]
+  rownames(myfiles.als[[i]]) <- myfiles.als[[i]]$Probe
+  myfiles.als[[i]] <- myfiles.als[[i]][probes.als,]
+  fwrite(myfiles.als[[i]], paste("within_ALS/", names(myfiles.als)[i], sep = ""), quote=F, col.names = T, row.names = F, sep="\t")
+}
+
+# Data preparation for meta-analysis within PD
+myfiles.pd<- files[c(5,9)]
+
+names(myfiles.pd) <- myfiles[c(5,9)]
+
+probes.pd<- Reduce(intersect, list(myfiles.pd[[1]]$Probe, 
+                                    myfiles.pd[[2]]$Probe))
+
+
+for(i in 1:length(myfiles.pd)){
+  
+  myfiles.pd[[i]] <- myfiles.pd[[i]][which(myfiles.pd[[i]]$Probe %in% probes.pd),]
+  rownames(myfiles.pd[[i]]) <- myfiles.pd[[i]]$Probe
+  myfiles.pd[[i]] <- myfiles.pd[[i]][probes.pd,]
+  fwrite(myfiles.pd[[i]], paste("within_PD/", names(myfiles.pd)[i], sep = ""), quote=F, col.names = T, row.names = F, sep="\t")
+}
+
+# Data preparation for meta-analysis within SCZ
+myfiles.scz<- files[c(7,8)]
+
+names(myfiles.scz) <- myfiles[c(7,8)]
+
+probes.scz<- Reduce(intersect, list(myfiles.scz[[1]]$Probe, 
+                                    myfiles.scz[[2]]$Probe))
+
+for(i in 1:length(myfiles.scz)){
+  
+  myfiles.scz[[i]] <- myfiles.scz[[i]][which(myfiles.scz[[i]]$Probe %in% probes.scz),]
+  rownames(myfiles.scz[[i]]) <- myfiles.scz[[i]]$Probe
+  myfiles.scz[[i]] <- myfiles.scz[[i]][probes.scz,]
+  fwrite(myfiles.scz[[i]], paste("within_SCZ/", names(myfiles.scz)[i], sep = ""), quote=F, col.names = T, row.names = F, sep="\t")
+}
+
+# Data preparation for meta-analysis within AD
+
+# Data preparation for meta-analysis between AUS ALS, SGPD PD, AD
+myfiles.aus.sgpd.aibl<- files[c(1,2,9)]
+
+names(myfiles.aus.sgpd.aibl) <- myfiles[c(1,2,9)]
+
+probes.aus.sgpd.aibl<- Reduce(intersect, list(myfiles.aus.sgpd.aibl[[1]]$Probe, 
+                                    myfiles.aus.sgpd.aibl[[2]]$Probe,
+                                    myfiles.aus.sgpd.aibl[[3]]$Probe))
+
+
+for(i in 1:length(myfiles.aus.sgpd.aibl)){
+  
+  myfiles.aus.sgpd.aibl[[i]] <- myfiles.aus.sgpd.aibl[[i]][which(myfiles.aus.sgpd.aibl[[i]]$Probe %in% probes.aus.sgpd.aibl),]
+  rownames(myfiles.aus.sgpd.aibl[[i]]) <- myfiles.aus.sgpd.aibl[[i]]$Probe
+  myfiles.aus.sgpd.aibl[[i]] <- myfiles.aus.sgpd.aibl[[i]][probes.aus.sgpd.aibl,]
+  fwrite(myfiles.aus.sgpd.aibl[[i]], paste("within_AUS_SGPD_AIBL/", names(myfiles.aus.sgpd.aibl)[i], sep = ""), quote=F, col.names = T, row.names = F, sep="\t")
+}
+
+```
+
+> Now I am creating the METAL scripts to run metal.
+Within ALS MOA:
+
+```{bash metal_scripts_MOA_ALS, echo = T, message = T, warning  = F, }
+echo '#LOAD THE INPUT FILES
+# UNCOMMENT THE NEXT LINE TO ENABLE GenomicControl CORRECTION
+GENOMICCONTROL ON
+SCHEME STDERR
+# === DESCRIBE AND PROCESS THE FIRST INPUT FILE ===
+MARKER Probe
+EFFECT b
+STDERR se
+AVERAGEFREQ OFF
+MINMAXFREQ OFF
+COLUMNCOUNTING LENIENT
+SEPARATOR TAB
+PROCESS  within_ALS/AUS_ALS_PCTG_qced_normalized_DNAm_autosomes-no-X-react-no-SNP-sd0.02_noCOVS.moa
+
+# === THE SECOND INPUT FILE HAS THE SAME FORMAT AND CAN BE PROCESSED IMMEDIATELY ===
+PROCESS within_ALS/KCL_combined_qced_normalized_DNAm_autosomes-no-X-react-no-SNP-sd0.02_noCOVS.moa
+
+# === THE THIRD INPUT FILE HAS THE SAME FORMAT AND CAN BE PROCESSED IMMEDIATELY ===
+PROCESS within_ALS/Netherlands_ALS_qced_normalized_DNAm_autosomes-no-X-react-no-SNP-sd0.02_UNREL_noCOVS.moa
+
+OUTFILE within_ALS/meta_analyses_between_ALS_MOA_ .tbl
+ANALYZE HETEROGENEITY
+
+QUIT' > within_ALS/ALS_METAL_script_stderr_MOA.metal
+```
+
+> Within ALS MOMENT:
+
+```{bash metal_scripts_MOMENT_ALS, echo = T, message = T, warning  = F, }
+echo '#LOAD THE INPUT FILES
+# UNCOMMENT THE NEXT LINE TO ENABLE GenomicControl CORRECTION
+GENOMICCONTROL ON
+SCHEME STDERR
+# === DESCRIBE AND PROCESS THE FIRST INPUT FILE ===
+MARKER Probe
+EFFECT b
+STDERR se
+AVERAGEFREQ OFF
+MINMAXFREQ OFF
+COLUMNCOUNTING LENIENT
+SEPARATOR TAB
+PROCESS  within_ALS/AUS_ALS_PCTG_qced_normalized_DNAm_autosomes-no-X-react-no-SNP-sd0.02_noCOVS.moment
+
+# === THE SECOND INPUT FILE HAS THE SAME FORMAT AND CAN BE PROCESSED IMMEDIATELY ===
+PROCESS within_ALS/KCL_combined_qced_normalized_DNAm_autosomes-no-X-react-no-SNP-sd0.02_noCOVS.moment
+
+# === THE THIRD INPUT FILE HAS THE SAME FORMAT AND CAN BE PROCESSED IMMEDIATELY ===
+PROCESS within_ALS/Netherlands_ALS_qced_normalized_DNAm_autosomes-no-X-react-no-SNP-sd0.02_UNREL_noCOVS.moment
+
+OUTFILE within_ALS/meta_analyses_between_ALS_MOMENT_ .tbl
+ANALYZE HETEROGENEITY
+
+QUIT' > within_ALS/ALS_METAL_script_stderr_MOMENT.metal
+```
+
+> Within PD MOA:
+
+```{bash metal_scripts_MOA_PD, echo = T, message = T, warning  = F, }
+echo '#LOAD THE INPUT FILES
+# UNCOMMENT THE NEXT LINE TO ENABLE GenomicControl CORRECTION
+GENOMICCONTROL ON
+SCHEME STDERR
+# === DESCRIBE AND PROCESS THE FIRST INPUT FILE ===
+MARKER Probe
+EFFECT b
+STDERR se
+AVERAGEFREQ OFF
+MINMAXFREQ OFF
+COLUMNCOUNTING LENIENT
+SEPARATOR TAB
+PROCESS within_PD/SGPD_Parkinson_qced_normalized_DNAm_autosomes-no-X-react-no-SNP-sd0.02_noCOVS.moa
+
+# === THE SECOND INPUT FILE HAS THE SAME FORMAT AND CAN BE PROCESSED IMMEDIATELY ===
+PROCESS within_PD/PEG_Parkinson_Horvath_qced_normalized_DNAm_autosomes-no-X-react-no-SNP-sd0.02_noCOVS.moa
+
+OUTFILE within_PD/meta_analyses_between_PD_MOA_ .tbl
+ANALYZE HETEROGENEITY
+
+QUIT' >  within_PD/PD_METAL_script_stderr_MOA.metal
+```
+
+> Within PD MOMENT:
+
+```{bash metal_scripts_MOMENT_PD, echo = T, message = T, warning  = F, }
+echo '#LOAD THE INPUT FILES
+# UNCOMMENT THE NEXT LINE TO ENABLE GenomicControl CORRECTION
+GENOMICCONTROL ON
+SCHEME STDERR
+# === DESCRIBE AND PROCESS THE FIRST INPUT FILE ===
+MARKER Probe
+EFFECT b
+STDERR se
+AVERAGEFREQ OFF
+MINMAXFREQ OFF
+COLUMNCOUNTING LENIENT
+SEPARATOR TAB
+PROCESS within_PD/SGPD_Parkinson_qced_normalized_DNAm_autosomes-no-X-react-no-SNP-sd0.02_noCOVS.moment
+
+# === THE SECOND INPUT FILE HAS THE SAME FORMAT AND CAN BE PROCESSED IMMEDIATELY ===
+PROCESS within_PD/PEG_Parkinson_Horvath_qced_normalized_DNAm_autosomes-no-X-react-no-SNP-sd0.02_noCOVS.moment
+
+OUTFILE within_PD/meta_analyses_between_PD_MOMENT_ .tbl
+ANALYZE HETEROGENEITY
+
+QUIT' >  within_PD/PD_METAL_script_stderr_MOMENT.metal
+```
+
+> Within SCZ MOA:
+
+```{bash metal_scripts_MOA_SCZ, echo = T, message = T, warning  = F, }
+echo '#LOAD THE INPUT FILES
+# UNCOMMENT THE NEXT LINE TO ENABLE GenomicControl CORRECTION
+GENOMICCONTROL ON
+SCHEME STDERR
+# === DESCRIBE AND PROCESS THE FIRST INPUT FILE ===
+MARKER Probe
+EFFECT b
+STDERR se
+AVERAGEFREQ OFF
+MINMAXFREQ OFF
+COLUMNCOUNTING LENIENT
+SEPARATOR TAB
+PROCESS within_SCZ/SCZ1_qced_normalized_DNAm_autosomes-no-X-react-no-SNP-sd0.02_MOA_smok.moa
+
+# === THE SECOND INPUT FILE HAS THE SAME FORMAT AND CAN BE PROCESSED IMMEDIATELY ===
+PROCESS within_SCZ/SCZ2_qced_normalized_DNAm_autosomes-no-X-react-no-SNP-sd0.02_MOA_smok.moa
+
+OUTFILE within_SCZ/meta_analyses_between_SCZ_MOA_ .tbl
+ANALYZE HETEROGENEITY
+
+QUIT' >  within_SCZ/SCZ_METAL_script_stderr_MOA.metal
+```
+
+> Within SCZ MOMENT:
+
+```{bash metal_scripts_MOMENT_SCZ, echo = T, message = T, warning  = F, }
+echo '#LOAD THE INPUT FILES
+# UNCOMMENT THE NEXT LINE TO ENABLE GenomicControl CORRECTION
+GENOMICCONTROL ON
+SCHEME STDERR
+# === DESCRIBE AND PROCESS THE FIRST INPUT FILE ===
+MARKER Probe
+EFFECT b
+STDERR se
+AVERAGEFREQ OFF
+MINMAXFREQ OFF
+COLUMNCOUNTING LENIENT
+SEPARATOR TAB
+PROCESS within_SCZ/SCZ1_qced_normalized_DNAm_autosomes-no-X-react-no-SNP-sd0.02_MOMENT_smok.moment
+
+# === THE SECOND INPUT FILE HAS THE SAME FORMAT AND CAN BE PROCESSED IMMEDIATELY ===
+PROCESS within_SCZ/SCZ2_qced_normalized_DNAm_autosomes-no-X-react-no-SNP-sd0.02_MOMENT_smok.moment
+
+OUTFILE within_SCZ/meta_analyses_between_SCZ_MOMENT_ .tbl
+ANALYZE HETEROGENEITY
+
+QUIT' >  within_SCZ/SCZ_METAL_script_stderr_MOMENT.metal
+```
+
+> Between AD, ALS and PD MOA:
+
+```{bash metal_scripts_MOA_NDs, echo = T, message = T, warning  = F, }
+echo '#LOAD THE INPUT FILES
+# UNCOMMENT THE NEXT LINE TO ENABLE GenomicControl CORRECTION
+GENOMICCONTROL ON
+SCHEME STDERR
+# === DESCRIBE AND PROCESS THE FIRST INPUT FILE ===
+MARKER Probe
+EFFECT b
+STDERR se
+AVERAGEFREQ OFF
+MINMAXFREQ OFF
+COLUMNCOUNTING LENIENT
+SEPARATOR TAB
+PROCESS  ALS_PD_AD/AUS_ALS_PCTG_qced_normalized_DNAm_autosomes-no-X-react-no-SNP-sd0.02_noCOVS.moa
+
+# === THE SECOND INPUT FILE HAS THE SAME FORMAT AND CAN BE PROCESSED IMMEDIATELY ===
+PROCESS ALS_PD_AD/KCL_combined_qced_normalized_DNAm_autosomes-no-X-react-no-SNP-sd0.02_noCOVS.moa
+
+# === THE THIRD INPUT FILE HAS THE SAME FORMAT AND CAN BE PROCESSED IMMEDIATELY ===
+PROCESS ALS_PD_AD/Netherlands_ALS_qced_normalized_DNAm_autosomes-no-X-react-no-SNP-sd0.02_UNREL_noCOVS.moa
+
+# === THE FOURTH INPUT FILE HAS THE SAME FORMAT AND CAN BE PROCESSED IMMEDIATELY ===
+PROCESS ALS_PD_AD/SGPD_Parkinson_qced_normalized_DNAm_autosomes-no-X-react-no-SNP-sd0.02_noCOVS.moa
+
+# === THE FIFTH INPUT FILE HAS THE SAME FORMAT AND CAN BE PROCESSED IMMEDIATELY ===
+PROCESS ALS_PD_AD/PEG_Parkinson_Horvath_qced_normalized_DNAm_autosomes-no-X-react-no-SNP-sd0.02_noCOVS.moa
+
+# === THE SIXTH INPUT FILE HAS THE SAME FORMAT AND CAN BE PROCESSED IMMEDIATELY ===
+PROCESS ALS_PD_AD/BM_Alzheimer_qced_normalized_noMCI_autosomes-no-X-react-no-SNP-sd0.02_noCOVS.moa
+
+OUTFILE ALS_PD_AD/meta_analyses_between_AD_PD_ALS_MOA_ .tbl
+ANALYZE HETEROGENEITY
+
+QUIT' >  ALS_PD_AD/AD_PD_ALS_METAL_script_stderr_MOA.metal
+```
+
+> Between AD, ALS and PD MOMENT:
+
+```{bash metal_scripts_MOMENT_NDs, echo = T, message = T, warning  = F, }
+echo '#LOAD THE INPUT FILES
+# UNCOMMENT THE NEXT LINE TO ENABLE GenomicControl CORRECTION
+GENOMICCONTROL ON
+SCHEME STDERR
+# === DESCRIBE AND PROCESS THE FIRST INPUT FILE ===
+MARKER Probe
+EFFECT b
+STDERR se
+AVERAGEFREQ OFF
+MINMAXFREQ OFF
+COLUMNCOUNTING LENIENT
+SEPARATOR TAB
+PROCESS  ALS_PD_AD/AUS_ALS_PCTG_qced_normalized_DNAm_autosomes-no-X-react-no-SNP-sd0.02_noCOVS.moment
+
+# === THE SECOND INPUT FILE HAS THE SAME FORMAT AND CAN BE PROCESSED IMMEDIATELY ===
+PROCESS ALS_PD_AD/KCL_combined_qced_normalized_DNAm_autosomes-no-X-react-no-SNP-sd0.02_noCOVS.moment
+
+# === THE THIRD INPUT FILE HAS THE SAME FORMAT AND CAN BE PROCESSED IMMEDIATELY ===
+PROCESS ALS_PD_AD/Netherlands_ALS_qced_normalized_DNAm_autosomes-no-X-react-no-SNP-sd0.02_UNREL_noCOVS.moment
+
+# === THE FOURTH INPUT FILE HAS THE SAME FORMAT AND CAN BE PROCESSED IMMEDIATELY ===
+PROCESS ALS_PD_AD/SGPD_Parkinson_qced_normalized_DNAm_autosomes-no-X-react-no-SNP-sd0.02_noCOVS.moment
+
+# === THE FIFTH INPUT FILE HAS THE SAME FORMAT AND CAN BE PROCESSED IMMEDIATELY ===
+PROCESS ALS_PD_AD/PEG_Parkinson_Horvath_qced_normalized_DNAm_autosomes-no-X-react-no-SNP-sd0.02_noCOVS.moment
+
+# === THE SIXTH INPUT FILE HAS THE SAME FORMAT AND CAN BE PROCESSED IMMEDIATELY ===
+PROCESS ALS_PD_AD/BM_Alzheimer_qced_normalized_noMCI_autosomes-no-X-react-no-SNP-sd0.02_noCOVS.moment
+
+OUTFILE ALS_PD_AD/meta_analyses_between_AD_PD_ALS_MOMENT_ .tbl
+ANALYZE HETEROGENEITY
+
+QUIT' >  ALS_PD_AD/AD_PD_ALS_METAL_script_stderr_MOMENT.metal
+```
+
+> Between AD, ALS, PD and RA MOA:
+
+```{bash metal_scripts_MOA_NDs_RA, echo = T, message = T, warning  = F, }
+echo '#LOAD THE INPUT FILES
+# UNCOMMENT THE NEXT LINE TO ENABLE GenomicControl CORRECTION
+GENOMICCONTROL ON
+SCHEME STDERR
+# === DESCRIBE AND PROCESS THE FIRST INPUT FILE ===
+MARKER Probe
+EFFECT b
+STDERR se
+AVERAGEFREQ OFF
+MINMAXFREQ OFF
+COLUMNCOUNTING LENIENT
+SEPARATOR TAB
+PROCESS  ALS_PD_AD_RA/AUS_ALS_PCTG_qced_normalized_DNAm_autosomes-no-X-react-no-SNP-sd0.02_noCOVS.moa
+
+# === THE SECOND INPUT FILE HAS THE SAME FORMAT AND CAN BE PROCESSED IMMEDIATELY ===
+PROCESS ALS_PD_AD_RA/KCL_combined_qced_normalized_DNAm_autosomes-no-X-react-no-SNP-sd0.02_noCOVS.moa
+
+# === THE THIRD INPUT FILE HAS THE SAME FORMAT AND CAN BE PROCESSED IMMEDIATELY ===
+PROCESS ALS_PD_AD_RA/Netherlands_ALS_qced_normalized_DNAm_autosomes-no-X-react-no-SNP-sd0.02_UNREL_noCOVS.moa
+
+# === THE FOURTH INPUT FILE HAS THE SAME FORMAT AND CAN BE PROCESSED IMMEDIATELY ===
+PROCESS ALS_PD_AD_RA/SGPD_Parkinson_qced_normalized_DNAm_autosomes-no-X-react-no-SNP-sd0.02_noCOVS.moa
+
+# === THE FIFTH INPUT FILE HAS THE SAME FORMAT AND CAN BE PROCESSED IMMEDIATELY ===
+PROCESS ALS_PD_AD_RA/PEG_Parkinson_Horvath_qced_normalized_DNAm_autosomes-no-X-react-no-SNP-sd0.02_noCOVS.moa
+
+# === THE SIXTH INPUT FILE HAS THE SAME FORMAT AND CAN BE PROCESSED IMMEDIATELY ===
+PROCESS ALS_PD_AD_RA/BM_Alzheimer_qced_normalized_noMCI_autosomes-no-X-react-no-SNP-sd0.02_noCOVS.moa
+
+# === THE SEVENTH INPUT FILE HAS THE SAME FORMAT AND CAN BE PROCESSED IMMEDIATELY ===
+PROCESS ALS_PD_AD_RA/RA_GSE42861_qced_normalized_DNAm_autosomes-no-X-react-no-SNP-sd0.02_noCOVS.moa
+
+OUTFILE ALS_PD_AD_RA/meta_analyses_between_AD_PD_ALS_RA_MOA_ .tbl
+ANALYZE HETEROGENEITY
+
+QUIT' >  ALS_PD_AD_RA/AD_PD_ALS_RA_METAL_script_stderr_MOA.metal
+```
+
+> Between AD, ALS, PD and RA MOMENT:
+
+```{bash metal_scripts_MOMENT_NDs_RA, echo = T, message = T, warning  = F, }
+echo '#LOAD THE INPUT FILES
+# UNCOMMENT THE NEXT LINE TO ENABLE GenomicControl CORRECTION
+GENOMICCONTROL ON
+SCHEME STDERR
+# === DESCRIBE AND PROCESS THE FIRST INPUT FILE ===
+MARKER Probe
+EFFECT b
+STDERR se
+AVERAGEFREQ OFF
+MINMAXFREQ OFF
+COLUMNCOUNTING LENIENT
+SEPARATOR TAB
+PROCESS  ALS_PD_AD_RA/AUS_ALS_PCTG_qced_normalized_DNAm_autosomes-no-X-react-no-SNP-sd0.02_noCOVS.moment
+
+# === THE SECOND INPUT FILE HAS THE SAME FORMAT AND CAN BE PROCESSED IMMEDIATELY ===
+PROCESS ALS_PD_AD_RA/KCL_combined_qced_normalized_DNAm_autosomes-no-X-react-no-SNP-sd0.02_noCOVS.moment
+
+# === THE THIRD INPUT FILE HAS THE SAME FORMAT AND CAN BE PROCESSED IMMEDIATELY ===
+PROCESS ALS_PD_AD_RA/Netherlands_ALS_qced_normalized_DNAm_autosomes-no-X-react-no-SNP-sd0.02_UNREL_noCOVS.moment
+
+# === THE FOURTH INPUT FILE HAS THE SAME FORMAT AND CAN BE PROCESSED IMMEDIATELY ===
+PROCESS ALS_PD_AD_RA/SGPD_Parkinson_qced_normalized_DNAm_autosomes-no-X-react-no-SNP-sd0.02_noCOVS.moment
+
+# === THE FIFTH INPUT FILE HAS THE SAME FORMAT AND CAN BE PROCESSED IMMEDIATELY ===
+PROCESS ALS_PD_AD_RA/PEG_Parkinson_Horvath_qced_normalized_DNAm_autosomes-no-X-react-no-SNP-sd0.02_noCOVS.moment
+
+# === THE SIXTH INPUT FILE HAS THE SAME FORMAT AND CAN BE PROCESSED IMMEDIATELY ===
+PROCESS ALS_PD_AD_RA/BM_Alzheimer_qced_normalized_noMCI_autosomes-no-X-react-no-SNP-sd0.02_noCOVS.moment
+
+# === THE SEVENTH INPUT FILE HAS THE SAME FORMAT AND CAN BE PROCESSED IMMEDIATELY ===
+PROCESS ALS_PD_AD_RA/RA_GSE42861_qced_normalized_DNAm_autosomes-no-X-react-no-SNP-sd0.02_noCOVS.moment
+
+OUTFILE ALS_PD_AD_RA/meta_analyses_between_AD_PD_ALS_RA_MOMENT_ .tbl
+ANALYZE HETEROGENEITY
+
+QUIT' > ALS_PD_AD_RA/AD_PD_ALS_RA_METAL_script_stderr_MOMENT.metal
+```
+
+> Between AD, ALS, PD and SCZ MOA:
+
+```{bash metal_scripts_MOA_NDs_SCZ, echo = T, message = T, warning  = F, }
+echo '#LOAD THE INPUT FILES
+# UNCOMMENT THE NEXT LINE TO ENABLE GenomicControl CORRECTION
+GENOMICCONTROL ON
+SCHEME STDERR
+# === DESCRIBE AND PROCESS THE FIRST INPUT FILE ===
+MARKER Probe
+EFFECT b
+STDERR se
+AVERAGEFREQ OFF
+MINMAXFREQ OFF
+COLUMNCOUNTING LENIENT
+SEPARATOR TAB
+PROCESS  ALS_PD_AD_SCZ/AUS_ALS_PCTG_qced_normalized_DNAm_autosomes-no-X-react-no-SNP-sd0.02_noCOVS.moa
+
+# === THE SECOND INPUT FILE HAS THE SAME FORMAT AND CAN BE PROCESSED IMMEDIATELY ===
+PROCESS ALS_PD_AD_SCZ/KCL_combined_qced_normalized_DNAm_autosomes-no-X-react-no-SNP-sd0.02_noCOVS.moa
+
+# === THE THIRD INPUT FILE HAS THE SAME FORMAT AND CAN BE PROCESSED IMMEDIATELY ===
+PROCESS ALS_PD_AD_SCZ/Netherlands_ALS_qced_normalized_DNAm_autosomes-no-X-react-no-SNP-sd0.02_UNREL_noCOVS.moa
+
+# === THE FOURTH INPUT FILE HAS THE SAME FORMAT AND CAN BE PROCESSED IMMEDIATELY ===
+PROCESS ALS_PD_AD_SCZ/SGPD_Parkinson_qced_normalized_DNAm_autosomes-no-X-react-no-SNP-sd0.02_noCOVS.moa
+
+# === THE FIFTH INPUT FILE HAS THE SAME FORMAT AND CAN BE PROCESSED IMMEDIATELY ===
+PROCESS ALS_PD_AD_SCZ/PEG_Parkinson_Horvath_qced_normalized_DNAm_autosomes-no-X-react-no-SNP-sd0.02_noCOVS.moa
+
+# === THE SIXTH INPUT FILE HAS THE SAME FORMAT AND CAN BE PROCESSED IMMEDIATELY ===
+PROCESS ALS_PD_AD_SCZ/BM_Alzheimer_qced_normalized_noMCI_autosomes-no-X-react-no-SNP-sd0.02_noCOVS.moa
+
+# === THE SEVENTH INPUT FILE HAS THE SAME FORMAT AND CAN BE PROCESSED IMMEDIATELY ===
+PROCESS ALS_PD_AD_SCZ/SCZ1_qced_normalized_DNAm_autosomes-no-X-react-no-SNP-sd0.02_MOA_smok.moa
+
+# === THE EIGHT INPUT FILE HAS THE SAME FORMAT AND CAN BE PROCESSED IMMEDIATELY ===
+PROCESS ALS_PD_AD_SCZ/SCZ2_qced_normalized_DNAm_autosomes-no-X-react-no-SNP-sd0.02_MOA_smok.moa
+
+OUTFILE ALS_PD_AD_SCZ/meta_analyses_between_AD_PD_ALS_SCZ_MOA_ .tbl
+ANALYZE HETEROGENEITY
+
+QUIT' >  ALS_PD_AD_SCZ/AD_PD_ALS_SCZ_METAL_script_stderr_MOA.metal
+```
+
+> Between AD, ALS, PD and SCZ MOMENT:
+
+```{bash metal_scripts_MOMENT_NDs_SCZ, echo = T, message = T, warning  = F, }
+echo '#LOAD THE INPUT FILES
+# UNCOMMENT THE NEXT LINE TO ENABLE GenomicControl CORRECTION
+GENOMICCONTROL ON
+SCHEME STDERR
+# === DESCRIBE AND PROCESS THE FIRST INPUT FILE ===
+MARKER Probe
+EFFECT b
+STDERR se
+AVERAGEFREQ OFF
+MINMAXFREQ OFF
+COLUMNCOUNTING LENIENT
+SEPARATOR TAB
+PROCESS  ALS_PD_AD_SCZ/AUS_ALS_PCTG_qced_normalized_DNAm_autosomes-no-X-react-no-SNP-sd0.02_noCOVS.moment
+
+# === THE SECOND INPUT FILE HAS THE SAME FORMAT AND CAN BE PROCESSED IMMEDIATELY ===
+PROCESS ALS_PD_AD_SCZ/KCL_combined_qced_normalized_DNAm_autosomes-no-X-react-no-SNP-sd0.02_noCOVS.moment
+
+# === THE THIRD INPUT FILE HAS THE SAME FORMAT AND CAN BE PROCESSED IMMEDIATELY ===
+PROCESS ALS_PD_AD_SCZ/Netherlands_ALS_qced_normalized_DNAm_autosomes-no-X-react-no-SNP-sd0.02_UNREL_noCOVS.moment
+
+# === THE FOURTH INPUT FILE HAS THE SAME FORMAT AND CAN BE PROCESSED IMMEDIATELY ===
+PROCESS ALS_PD_AD_SCZ/SGPD_Parkinson_qced_normalized_DNAm_autosomes-no-X-react-no-SNP-sd0.02_noCOVS.moment
+
+# === THE FIFTH INPUT FILE HAS THE SAME FORMAT AND CAN BE PROCESSED IMMEDIATELY ===
+PROCESS ALS_PD_AD_SCZ/PEG_Parkinson_Horvath_qced_normalized_DNAm_autosomes-no-X-react-no-SNP-sd0.02_noCOVS.moment
+
+# === THE SIXTH INPUT FILE HAS THE SAME FORMAT AND CAN BE PROCESSED IMMEDIATELY ===
+PROCESS ALS_PD_AD_SCZ/BM_Alzheimer_qced_normalized_noMCI_autosomes-no-X-react-no-SNP-sd0.02_noCOVS.moment
+
+# === THE SEVENTH INPUT FILE HAS THE SAME FORMAT AND CAN BE PROCESSED IMMEDIATELY ===
+PROCESS ALS_PD_AD_SCZ/SCZ1_qced_normalized_DNAm_autosomes-no-X-react-no-SNP-sd0.02_MOMENT_smok.moment
+
+# === THE EIGHT INPUT FILE HAS THE SAME FORMAT AND CAN BE PROCESSED IMMEDIATELY ===
+PROCESS ALS_PD_AD_SCZ/SCZ2_qced_normalized_DNAm_autosomes-no-X-react-no-SNP-sd0.02_MOMENT_smok.moment
+
+OUTFILE ALS_PD_AD_SCZ/meta_analyses_between_AD_PD_ALS_SCZ_MOMENT_ .tbl
+ANALYZE HETEROGENEITY
+
+QUIT' > ALS_PD_AD_SCZ/AD_PD_ALS_SCZ_METAL_script_stderr_MOMENT.metal
+```
+
+> Between AUS, SGPD and AIBL MOA:
+
+```{bash metal_scripts_MOA_AUS_SGPD_AIBL, echo = T, message = T, warning  = F, }
+echo '#LOAD THE INPUT FILES
+# UNCOMMENT THE NEXT LINE TO ENABLE GenomicControl CORRECTION
+GENOMICCONTROL ON
+SCHEME STDERR
+# === DESCRIBE AND PROCESS THE FIRST INPUT FILE ===
+MARKER Probe
+EFFECT b
+STDERR se
+AVERAGEFREQ OFF
+MINMAXFREQ OFF
+COLUMNCOUNTING LENIENT
+SEPARATOR TAB
+PROCESS  within_AUS_SGPD_AIBL/AUS_ALS_PCTG_qced_normalized_DNAm_autosomes-no-X-react-no-SNP-sd0.02_noCOVS.moa
+
+# === THE SECOND INPUT FILE HAS THE SAME FORMAT AND CAN BE PROCESSED IMMEDIATELY ===
+PROCESS within_AUS_SGPD_AIBL/SGPD_Parkinson_qced_normalized_DNAm_autosomes-no-X-react-no-SNP-sd0.02_noCOVS.moa
+
+# === THE THIRD INPUT FILE HAS THE SAME FORMAT AND CAN BE PROCESSED IMMEDIATELY ===
+PROCESS within_AUS_SGPD_AIBL/BM_Alzheimer_qced_normalized_noMCI_autosomes-no-X-react-no-SNP-sd0.02_noCOVS.moa
+
+OUTFILE within_AUS_SGPD_AIBL/meta_analyses_between_AUS_SGPD_AIBL_MOA_ .tbl
+ANALYZE HETEROGENEITY
+
+QUIT' >  within_AUS_SGPD_AIBL/AUS_SGPD_AIBL_METAL_script_stderr_MOA.metal
+```
+
+> Between AUS, SGPD and AIBL  MOMENT:
+
+```{bash metal_scripts_MOMENT_AUS_SGPD_AIBL, echo = T, message = T, warning  = F, }
+echo '#LOAD THE INPUT FILES
+# UNCOMMENT THE NEXT LINE TO ENABLE GenomicControl CORRECTION
+GENOMICCONTROL ON
+SCHEME STDERR
+# === DESCRIBE AND PROCESS THE FIRST INPUT FILE ===
+MARKER Probe
+EFFECT b
+STDERR se
+AVERAGEFREQ OFF
+MINMAXFREQ OFF
+COLUMNCOUNTING LENIENT
+SEPARATOR TAB
+PROCESS  within_AUS_SGPD_AIBL/AUS_ALS_PCTG_qced_normalized_DNAm_autosomes-no-X-react-no-SNP-sd0.02_noCOVS.moment
+
+# === THE SECOND INPUT FILE HAS THE SAME FORMAT AND CAN BE PROCESSED IMMEDIATELY ===
+PROCESS within_AUS_SGPD_AIBL/SGPD_Parkinson_qced_normalized_DNAm_autosomes-no-X-react-no-SNP-sd0.02_noCOVS.moment
+
+# === THE THIRD INPUT FILE HAS THE SAME FORMAT AND CAN BE PROCESSED IMMEDIATELY ===
+PROCESS within_AUS_SGPD_AIBL/BM_Alzheimer_qced_normalized_noMCI_autosomes-no-X-react-no-SNP-sd0.02_noCOVS.moment
+
+OUTFILE within_AUS_SGPD_AIBL/meta_analyses_between_AUS_SGPD_AIBL_MOMENT_ .tbl
+ANALYZE HETEROGENEITY
+
+QUIT' >  within_AUS_SGPD_AIBL/AUS_SGPD_AIBL_METAL_script_stderr_MOMENT.metal
+```
+
+# Run METAL 
+```{bash run_metal, echo = T, warning  = F,  message = F}
+metal=/Users/m.nabais/Documents/20190210_PhD_QUEX/2019_BM_all_datasets/OSCA_results/software/metal
+
+$metal ALS_PD_AD/AD_PD_ALS_METAL_script_stderr_MOA.metal
+$metal ALS_PD_AD/AD_PD_ALS_METAL_script_stderr_MOMENT.metal
+
+$metal ALS_PD_AD_RA/AD_PD_ALS_RA_METAL_script_stderr_MOA.metal
+$metal ALS_PD_AD_RA/AD_PD_ALS_RA_METAL_script_stderr_MOMENT.metal
+
+$metal ALS_PD_AD_SCZ/AD_PD_ALS_SCZ_METAL_script_stderr_MOA.metal
+$metal ALS_PD_AD_SCZ/AD_PD_ALS_SCZ_METAL_script_stderr_MOMENT.metal
+
+$metal within_ALS/ALS_METAL_script_stderr_MOA.metal
+$metal within_ALS/ALS_METAL_script_stderr_MOMENT.metal
+
+$metal within_PD/PD_METAL_script_stderr_MOA.metal
+$metal within_PD/PD_METAL_script_stderr_MOMENT.metal
+
+$metal within_SCZ/SCZ_METAL_script_stderr_MOA.metal
+$metal within_SCZ/SCZ_METAL_script_stderr_MOMENT.metal
+
+$metal within_AUS_SGPD_AIBL/AUS_SGPD_AIBL_METAL_script_stderr_MOA.metal
+$metal within_AUS_SGPD_AIBL/AUS_SGPD_AIBL_METAL_script_stderr_MOMENT.metal
+```
+
+# Parse METAL for plotting
+
+```{bash parse_METAL_script}
+echo '#!/bin/env Rscript
+library(data.table)
+library(tidyverse)
+
+args = commandArgs(trailingOnly = TRUE)
+
+meta <- fread(args[1], data.table = F, fill = T)
+
+meta <- meta[,-c(2,3)]
+colnames(meta)[1:4] <- c("Probe", "b", "se", "p")
+
+probe.info <- fread(args[2], data.table = F, fill = T)
+
+meta <- left_join(meta, probe.info[,1:4])
+
+fwrite(meta, args[3], quote=F, col.names = T, row.names = F, sep = "\t") # args[2] == <path>/<filename>' > parse_metal_for_manhattan.R
+
+# ALS, PD, AD
+Rscript parse_metal_for_manhattan.R ALS_PD_AD/meta_analyses_between_AD_PD_ALS_MOA_1.tbl \
+ALS_PD_AD/AUS*.moa \
+ALS_PD_AD/meta_analyses_between_AD_PD_ALS_MOA_1_MANHATTAN.tbl
+
+Rscript parse_metal_for_manhattan.R ALS_PD_AD/meta_analyses_between_AD_PD_ALS_MOMENT_1.tbl \
+ALS_PD_AD/AUS*.moment \
+ALS_PD_AD/meta_analyses_between_AD_PD_ALS_MOMENT_1_MANHATTAN.tbl
+
+# ALS, PD, AD, RA
+Rscript parse_metal_for_manhattan.R ALS_PD_AD_RA/meta_analyses_between_AD_PD_ALS_RA_MOA_1.tbl \
+ALS_PD_AD_RA/AUS*.moa \
+ALS_PD_AD_RA/meta_analyses_between_AD_PD_ALS_RA_MOA_1_MANHATTAN.tbl
+
+Rscript parse_metal_for_manhattan.R ALS_PD_AD_RA/meta_analyses_between_AD_PD_ALS_RA_MOMENT_1.tbl \
+ALS_PD_AD_RA/AUS*.moment \
+ALS_PD_AD_RA/meta_analyses_between_AD_PD_ALS_RA_MOMENT_1_MANHATTAN.tbl
+
+# ALS, PD, AD, SCZ
+Rscript parse_metal_for_manhattan.R ALS_PD_AD_SCZ/meta_analyses_between_AD_PD_ALS_SCZ_MOA_1.tbl \
+ALS_PD_AD_SCZ/AUS*.moa \
+ALS_PD_AD_SCZ/meta_analyses_between_AD_PD_ALS_SCZ_MOA_1_MANHATTAN.tbl
+
+Rscript parse_metal_for_manhattan.R ALS_PD_AD_SCZ/meta_analyses_between_AD_PD_ALS_SCZ_MOMENT_1.tbl \
+ALS_PD_AD_SCZ/AUS*.moment \
+ALS_PD_AD_SCZ/meta_analyses_between_AD_PD_ALS_SCZ_MOMENT_1_MANHATTAN.tbl
+
+# within ALS
+Rscript parse_metal_for_manhattan.R within_ALS/meta_analyses_between_ALS_MOA_1.tbl \
+within_ALS/AUS*.moa \
+within_ALS/meta_analyses_between_ALS_MOA_1_MANHATTAN.tbl
+
+Rscript parse_metal_for_manhattan.R within_ALS/meta_analyses_between_ALS_MOMENT_1.tbl \
+within_ALS/AUS*.moment \
+within_ALS/meta_analyses_between_ALS_MOMENT_1_MANHATTAN.tbl
+
+# within PD
+Rscript parse_metal_for_manhattan.R within_PD/meta_analyses_between_PD_MOA_1.tbl \
+within_PD/SGPD*.moa \
+within_PD/meta_analyses_between_PD_MOA_1_MANHATTAN.tbl
+
+Rscript parse_metal_for_manhattan.R within_PD/meta_analyses_between_PD_MOMENT_1.tbl \
+within_PD/SGPD*.moment \
+within_PD/meta_analyses_between_PD_MOMENT_1_MANHATTAN.tbl
+
+# within SCZ
+Rscript parse_metal_for_manhattan.R within_SCZ/meta_analyses_between_SCZ_MOA_1.tbl \
+within_SCZ/SCZ1*.moa \
+within_SCZ/meta_analyses_between_SCZ_MOA_1_MANHATTAN.tbl
+
+Rscript parse_metal_for_manhattan.R within_SCZ/meta_analyses_between_SCZ_MOMENT_1.tbl \
+within_SCZ/SCZ1*.moment \
+within_SCZ/meta_analyses_between_SCZ_MOMENT_1_MANHATTAN.tbl
+
+# within AUS, SGPD, AIBL
+Rscript parse_metal_for_manhattan.R within_AUS_SGPD_AIBL/meta_analyses_between_AUS_SGPD_AIBL_MOA_1.tbl \
+within_AUS_SGPD_AIBL/AUS*.moa \
+within_AUS_SGPD_AIBL/meta_analyses_between_AUS_SGPD_AIBL_MOA_1_MANHATTAN.tbl
+
+Rscript parse_metal_for_manhattan.R within_AUS_SGPD_AIBL/meta_analyses_between_AUS_SGPD_AIBL_MOMENT_1.tbl \
+within_AUS_SGPD_AIBL/AUS*.moment \
+within_AUS_SGPD_AIBL/meta_analyses_between_AUS_SGPD_AIBL_MOMENT_1_MANHATTAN.tbl
+```
+
+# Manhattan plots
+
+> The script to plot Manhattan plots:
+
+```{bash manhattan_script, echo=T}
+echo '# Libraries ====
+library(readr)
+library(ggrepel)
+library(ggplot2)
+library(dplyr)
+library(RColorBrewer)
+
+gg.manhattan <- function(df, threshold, hlight, col, ylims, title){
+  # format df
+  df.tmp <- df %>% 
+    
+    # Compute chromosome size
+    group_by(CHR) %>% 
+    summarise(chr_len=max(BP)) %>% 
+    
+    # Calculate cumulative position of each chromosome
+    mutate(tot=cumsum(as.numeric(chr_len))-chr_len) %>%
+    select(-chr_len) %>%
+    
+    # Add this info to the initial dataset
+    left_join(df, ., by=c("CHR"="CHR")) %>%
+    
+    # Add a cumulative position of each SNP
+    arrange(CHR, BP) %>%
+    mutate( BPcum=BP+tot) %>%
+    
+    # Add highlight and annotation information
+    mutate( is_highlight=ifelse(GENE %in% hlight & P < threshold, "yes", "no")) %>%
+    mutate( is_annotate=ifelse(P < threshold, "yes", "no"))
+  
+  # get chromosome center positions for x-axis
+  axisdf <- df.tmp %>% group_by(CHR) %>% summarize(center=( max(BPcum) + min(BPcum) ) / 2 )
+  
+  ggplot(df.tmp, aes(x=BPcum, y=-log10(P))) +
+    # Show all points
+    geom_point(aes(color=as.factor(CHR)), alpha=0.8, size=2) +
+    scale_color_manual(values = rep(col, 22 )) +
+
+    # custom X axis:
+    scale_x_continuous( label = axisdf$CHR, breaks= axisdf$center ) +
+    scale_y_continuous(expand = c(0, 0), limits = ylims) + # expand=c(0,0)removes space between plot area and x axis 
+    
+    # add plot and axis titles
+    ggtitle(paste0(title)) +
+    labs(x = "Chromosome") +
+    
+    # add genome-wide sig and sugg lines
+    geom_hline(yintercept = -log10(threshold)) +
+
+    # Add highlighted points
+    geom_point(data=subset(df.tmp, is_highlight=="yes"), color="orange", size=2) +
+    
+    # Add label using ggrepel to avoid overlapping
+    geom_label_repel(data=df.tmp[df.tmp$is_annotate=="yes",], aes(label=as.factor(GENE), alpha=0.7), size=5, force=1.3) +
+    
+    # Custom the theme:
+    theme_bw(base_size = 22) +
+    theme( 
+      plot.title = element_text(hjust = 0.5),
+      legend.position="none",
+      panel.border = element_blank(),
+      panel.grid.major.x = element_blank(),
+      panel.grid.minor.x = element_blank(),
+      axis.text = element_text(size = 16),
+      axis.title = element_text(size = 20),
+      axis.text.x = element_text(angle = 45, hjust= 1)
+    )
+}' > gg_manhattan.R
+```
+
+> The script to plot QQ plots:
+
+```{bash qq_script, echo = T}
+echo 'library(ggplot2)
+gg_qqplot <- function(ps, ci = 0.95) {
+  n  <- length(ps)
+  df <- data.frame(
+    observed = -log10(sort(ps)),
+    expected = -log10(ppoints(n)),
+    clower   = -log10(qbeta(p = (1 - ci) / 2, shape1 = 1:n, shape2 = n:1)),
+    cupper   = -log10(qbeta(p = (1 + ci) / 2, shape1 = 1:n, shape2 = n:1))
+  )
+  log10Pe <- expression(paste("Expected -log"[10], plain(P)))
+  log10Po <- expression(paste("Observed -log"[10], plain(P)))
+  lambda1 <- round(qchisq(1-median(ps),1)/qchisq(0.5,1),2) 
+  ggplot(df) +
+    geom_point(aes(expected, observed), shape = 20, size = 3) +
+    geom_abline(intercept = 0, slope = 1, alpha = 0.5) +
+    geom_line(aes(expected, cupper), linetype = 2) +
+    geom_line(aes(expected, clower), linetype = 2) +
+    xlab(log10Pe) +
+    ylab(log10Po) +
+    theme_bw()+
+    theme(axis.title = element_text(size = 18),
+    axis.text = element_text(size = 16)) + 
+    annotate("text", x = 0.5, y = 12.5, label = as.expression(bquote(paste(lambda, " = ", .(lambda1), sep =""))), size = 6)
+}' > qq_plot.R
+```
+
+> The script to plot Manhattan, QQ and Volcano plots:
+
+```{bash manhattan_qq_volcano_script, echo = T}
+echo '#!/bin/env Rscript
+source("gg_manhattan.R")
+source("qq_plot.R")
+library(cowplot)
+
+args = commandArgs(trailingOnly = TRUE)
+
+mwas <- read.table(args[1], header = TRUE, fill = T)
+
+mwas <- mwas[,c(1, 10, 11, 12, 4, 2)]
+
+colnames(mwas) <- c("SNP", "CHR", "BP","GENE", "P", "B")
+
+mwas <- mwas[order(mwas$P),]
+
+mypalette <- c("#7796A4", "#4C748B", "#2C5771", "#143E56", "#05263A") # chr color palette
+
+mwas$P <- as.numeric(mwas$P)
+
+mysnps <- mwas[which(mwas$P < 0.05/nrow(mwas)),]$GENE
+
+sig = 0.05/nrow(mwas)  
+
+# Run Function ====
+p1 <- gg.manhattan(mwas, threshold=sig , hlight=mysnps, col=mypalette, 
+        ylim = c(min(-log10(mwas$P)), max(-log10(mwas$P)))+1, title="")
+
+p2 <- gg_qqplot(mwas$P, ci = 0.95) +
+        theme(plot.margin = unit(c(1, 1, 0, 0), "cm"))
+
+p3 <- ggplot(data = mwas, aes(x = B, y = -log10(P))) + 
+        geom_point() +
+        geom_hline(yintercept = -log10(sig)) + 
+        geom_point(data = mwas[1:length(mysnps),], aes(x = B, y = -log10(P)), colour = "orange") + 
+        theme_bw() + 
+        ylab("-log10(p)") + 
+        xlab("Effect size") + 
+        theme(axis.text = element_text(size = 16), axis.title = element_text(size = 20), plot.margin = unit(c(1, 1, 0, 0), "cm"))
+            
+p4 <- plot_grid(p2, p3, labels = c("B","C"), nrow = 2, align = "vh")
+
+plot_grid(p1, p4, ncol = 2, labels = c("A", ""), rel_widths = c(3/4, 1/4))
+
+ggsave(args[2], width = 20, height = 10, units = "in", dpi = 500)' > ewas_results_plots_metaNDs.R
+```
+
+> NOW TO PLOTTING!
+
+```{bash plot_manhattan_qq_volcano, echo = T , warning=F, message=F}
+# ALS, PD, AD
+Rscript ewas_results_plots_metaNDs.R \
+ALS_PD_AD/meta_analyses_between_AD_PD_ALS_MOA_1_MANHATTAN.tbl \
+ALS_PD_AD/meta_AD_ALS_PD_moa_genes.png
+
+Rscript ewas_results_plots_metaNDs.R \
+ALS_PD_AD/meta_analyses_between_AD_PD_ALS_MOMENT_1_MANHATTAN.tbl \
+ALS_PD_AD/meta_AD_ALS_PD_moment_genes.png
+
+# ALS, PD, AD, RA
+Rscript ewas_results_plots_metaNDs.R \
+ALS_PD_AD_RA/meta_analyses_between_AD_PD_ALS_RA_MOA_1_MANHATTAN.tbl \
+ALS_PD_AD_RA/meta_AD_ALS_PD_RA_moa_genes.png
+
+Rscript ewas_results_plots_metaNDs.R \
+ALS_PD_AD_RA/meta_analyses_between_AD_PD_ALS_RA_MOMENT_1_MANHATTAN.tbl \
+ALS_PD_AD_RA/meta_AD_ALS_PD_RA_moment_genes.png
+
+# ALS, PD, AD, SCZ
+Rscript ewas_results_plots_metaNDs.R \
+ALS_PD_AD_SCZ/meta_analyses_between_AD_PD_ALS_SCZ_MOA_1_MANHATTAN.tbl \
+ALS_PD_AD_SCZ/meta_AD_ALS_PD_SCZ_moa_genes.png
+
+Rscript ewas_results_plots_metaNDs.R \
+ALS_PD_AD_SCZ/meta_analyses_between_AD_PD_ALS_SCZ_MOMENT_1_MANHATTAN.tbl \
+ALS_PD_AD_SCZ/meta_AD_ALS_PD_SCZ_moment_genes.png
+
+# within ALS
+Rscript ewas_results_plots_metaNDs.R \
+within_ALS/meta_analyses_between_ALS_MOA_1_MANHATTAN.tbl \
+within_ALS/meta_ALS_moa_genes.png
+
+Rscript ewas_results_plots_metaNDs.R \
+within_ALS/meta_analyses_between_ALS_MOMENT_1_MANHATTAN.tbl \
+within_ALS/meta_ALS_moment_genes.png
+
+# within PD
+Rscript ewas_results_plots_metaNDs.R \
+within_PD/meta_analyses_between_PD_MOA_1_MANHATTAN.tbl \
+within_PD/meta_PD_moa_genes.png
+
+Rscript ewas_results_plots_metaNDs.R \
+within_PD/meta_analyses_between_PD_MOMENT_1_MANHATTAN.tbl \
+within_PD/meta_PD_moment_genes.png
+
+# within SCZ
+Rscript ewas_results_plots_metaNDs.R \
+within_SCZ/meta_analyses_between_SCZ_MOA_1_MANHATTAN.tbl \
+within_SCZ/meta_SCZ_moa_genes.png
+
+Rscript ewas_results_plots_metaNDs.R \
+within_SCZ/meta_analyses_between_SCZ_MOMENT_1_MANHATTAN.tbl \
+within_SCZ/meta_SCZ_moment_genes.png
+
+# within AUS, SGPD, AIBL
+Rscript ewas_results_plots_metaNDs.R \
+within_AUS_SGPD_AIBL/meta_analyses_between_AUS_SGPD_AIBL_MOA_1_MANHATTAN.tbl \
+within_AUS_SGPD_AIBL/meta_AUS_SGPD_AIBL_moa_genes.png
+
+Rscript ewas_results_plots_metaNDs.R \
+within_AUS_SGPD_AIBL/meta_analyses_between_AUS_SGPD_AIBL_MOMENT_1_MANHATTAN.tbl \
+within_AUS_SGPD_AIBL/meta_AUS_SGPD_AIBL_moment_genes.png
+```
+
+# Plot effect sizes from meta-MWAS
+
+```{r plot_effec_sizes, echo = T}
+meta.nds <- fread("ALS_PD_AD/meta_analyses_between_AD_PD_ALS_MOMENT_1_MANHATTAN.tbl")
+
+meta.nds.scz <- fread("ALS_PD_AD_SCZ/meta_analyses_between_AD_PD_ALS_SCZ_MOMENT_1_MANHATTAN.tbl")
+
+meta.nds.ra <- fread("ALS_PD_AD_RA/meta_analyses_between_AD_PD_ALS_RA_MOMENT_1_MANHATTAN.tbl")
+
+b.nds.scz <- meta.nds %>%
+  inner_join(meta.nds.scz, by = "Probe") %>%
+  ggscatter(x = "b.x", y = "b.y",
+            add = "reg.line",  # Add regressin line
+            add.params = list(color = "blue", fill = "gray"), # Customize reg. line
+            conf.int = TRUE # Add confidence interval
+            ) +
+  xlab("") + 
+  stat_cor(method = "pearson", label.x = -1.25, label.y = 1, col = "red") +
+  ylab("Effect sizes from MOMENT \nmeta-analysis of NDs + SCZ") + 
+  theme_bw()
+
+  
+b.nds.ra <- meta.nds %>%
+  inner_join(meta.nds.ra, by = "Probe") %>%
+  ggscatter(x = "b.x", y = "b.y",
+            add = "reg.line",  # Add regressin line
+            add.params = list(color = "blue", fill = "gray"), # Customize reg. line
+            conf.int = TRUE # Add confidence interval
+            ) +
+  xlab("Effect sizes from MOMENT \nmeta-analysis of NDs") + 
+  stat_cor(method = "pearson", label.x = -1.25, label.y = 1, col = "red") +
+  ylab("Effect sizes from MOMENT \nmeta-analysis of NDs + RA") + 
+  theme_bw()
+
+p.nds.scz <- meta.nds %>%
+  inner_join(meta.nds.scz, by = "Probe") %>%
+  ggplot(aes(x = -log10(p.x), y = -log10(p.y)))+
+  geom_point() + 
+  xlab("") + 
+  ylab("-log10(pval) from MOMENT \nmeta-analysis of NDs + SCZ") + 
+  geom_hline(yintercept = -log10(0.05/nrow(meta.nds.scz)), col = "lightblue", lty = 2) +
+  geom_vline(xintercept = -log10(0.05/nrow(meta.nds)), col = "darkred", lty = 2) + 
+  geom_label_repel(aes(label = ifelse((p.x < 0.05/nrow(meta.nds) | p.y < 0.05/nrow(meta.nds.scz)),
+                                     yes = Gene.x, no = "")), 
+                  size = 2.5) +
+  theme_bw()
+
+
+p.nds.ra <- meta.nds %>%
+  inner_join(meta.nds.ra, by = "Probe") %>%
+  ggplot(aes(x = -log10(p.x), y = -log10(p.y)))+
+  geom_point() + 
+  xlab("-log10(pval) from MOMENT \nmeta-analysis of NDs") + 
+  ylab("-log10(pval) from MOMENT \nmeta-analysis of NDs + RA") +
+  geom_hline(yintercept = -log10(0.05/nrow(meta.nds.ra)), col = "darkblue", lty = 2) +
+  geom_vline(xintercept = -log10(0.05/nrow(meta.nds)), col = "darkred", lty = 2) + 
+  geom_label_repel(aes(label = ifelse((p.x < 0.05/nrow(meta.nds) | p.y < 0.05/nrow(meta.nds.ra)),
+                                     yes = Gene.x, no = "")), 
+            size = 2.5) +
+  theme_bw()
+
+
+plot_grid(p.nds.scz, b.nds.scz, p.nds.ra, b.nds.ra, nrow = 2, labels = "AUTO")
+
+ggsave("correlation_effect_sizes.png", width = 12, height = 10)
+```

@@ -1,0 +1,23 @@
+# This file contains a short description of the columns in the
+# meta-analysis summary file, named 'ALS_PD_AD/meta_analyses_between_AD_PD_ALS_MOA_1.tbl'
+
+# Marker    - this is the marker name
+# Allele1   - the first allele for this marker in the first file where it occurs
+# Allele2   - the second allele for this marker in the first file where it occurs
+# Effect    - overall estimated effect size for allele1
+# StdErr    - overall standard error for effect size estimate
+# P-value   - meta-analysis p-value
+# Direction - summary of effect direction for each study, with one '+' or '-' per study
+# HetISq    - I^2 statistic which measures heterogeneity on scale of 0-100%
+# HetChiSq  - chi-squared statistic in simple test of heterogeneity
+# df        - degrees of freedom for heterogeneity statistic
+# HetPVal   - P-value for heterogeneity statistic
+
+# Input for this meta-analysis was stored in the files:
+# --> Input File 1 : ALS_PD_AD/AUS_ALS_PCTG_qced_normalized_DNAm_autosomes-no-X-react-no-SNP-sd0.02_noCOVS.moa
+# --> Input File 2 : ALS_PD_AD/KCL_combined_qced_normalized_DNAm_autosomes-no-X-react-no-SNP-sd0.02_noCOVS.moa
+# --> Input File 3 : ALS_PD_AD/Netherlands_ALS_qced_normalized_DNAm_autosomes-no-X-react-no-SNP-sd0.02_UNREL_noCOVS.moa
+# --> Input File 4 : ALS_PD_AD/SGPD_Parkinson_qced_normalized_DNAm_autosomes-no-X-react-no-SNP-sd0.02_noCOVS.moa
+# --> Input File 5 : ALS_PD_AD/PEG_Parkinson_Horvath_qced_normalized_DNAm_autosomes-no-X-react-no-SNP-sd0.02_noCOVS.moa
+# --> Input File 6 : ALS_PD_AD/BM_Alzheimer_qced_normalized_noMCI_autosomes-no-X-react-no-SNP-sd0.02_noCOVS.moa
+
