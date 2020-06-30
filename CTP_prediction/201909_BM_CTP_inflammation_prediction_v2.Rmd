@@ -1,0 +1,1863 @@
+---
+title: "Cell-type proportion (CTP) classification of neurodegenerative diseases"
+author: "[Marta Nabais](https://github.com/m-nabais)"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+mail: "m.nabais@uq.edu.au"
+twitter: "RandomWalkin"
+github: "m-nabais"
+output:
+  epuRate::PCTG:
+    toc: TRUE
+    number_sections: FALSE
+    code_folding: "show"
+---
+
+
+```{r import_markdown, echo=F, message=FALSE, warning=FALSE}
+# You need these libraries to run this template:
+library(rmarkdown)    # install.packages("rmarkdown") 
+library(epuRate)      # devtools::install_github("holtzy/epuRate", force=TRUE)
+```
+
+
+```{r import_libraries, echo=F, message=F, warning=F}
+library(tidyverse)
+library(cowplot)
+library(ggsci)
+library(meta)
+library(grid)
+library(pROC)
+library(openxlsx)
+library(GGally)
+library(ggExtra)
+library(ggrepel)
+library(corrr)
+library(corrplot)
+library(table1)
+library(ggthemes)
+library(RNOmni)
+source("MPS_calculation.R")
+```
+
+# Estimating cell-type proportion (CTP) in all datasets
+***
+  
+> Cell-type proportions (CTP) where estimated from DNA methylation (DNAm) levels, measured from 450K Illumina arrays, using the [EpiDISH algorithm](https://bmcbioinformatics.biomedcentral.com/articles/10.1186/s12859-017-1511-5) . These estimated CTP are routinely used in linear regression models in MWAS to account for the confounder effect of cell-type in DNAm data. In here, we used them as surrogate variables in the absence of real cell-type counts to predict different brain disorders. We hypothesize the high AUC achieved may be driven by a neuroinflammatory signal, captured by the observed difference in these CTP. To assess this hypothesis, we will perform within and cross-trait prediction and survival analyses in a healthy logitudinal cohort (LBC36). We will assess correlation of DNam-derived CTP profile scores and well-known inflammatory signals such as C-reactive protein (CRP). Below is the workflow for all analyses conducted.
+  
+***
+  
+* **First, I estimate the CTP for all datasets available using HPC with the following scripts : **
+  
+```{bash epidish, message=FALSE, echo=T, eval = F, }
+# Just run
+
+qsub epidish.pbs
+
+###############
+# epidish.pbs #
+###############
+
+#!/bin/bash
+#PBS -N epidish
+#PBS -A UQ-IMB-CNSG
+#PBS -l select=1:ncpus=1:mem=50gb
+#PBS -q normal
+#PBS -l walltime=01:00:00
+#PBS -V
+
+wd=/shares/compbio/Group-Wray/Marta/BRAIN-MEND/2019_CTP_prediction
+
+cd $wd
+
+[ ! -d "$wd/results" ] && mkdir -p "$wd/results"
+
+[ ! -d "$wd/results/epidish_ctp" ] && mkdir -p "$wd/results/epidish_ctp"
+
+cd $wd/results/epidish_ctp
+
+
+for f in $wd/data/*.rds; do Rscript $wd/code/epidish/epidish.R $f >> epidish_log.Rout 2>&1 ; done
+
+#############
+# epidish.R #
+#############
+
+# Load EpiDISH
+library(EpiDISH)
+
+# Load methylation beta values (unadjusted)
+
+file = commandArgs(trailingOnly=TRUE)
+
+print(paste("Reading file ", file[1], sep=""))
+
+beta <- readRDS(file[1])
+
+beta <- t(beta) # required by epidish
+
+print("Starting epidish estimation...")
+
+ctp.pred <- epidish(beta,  centDHSbloodDMC.m[,-5], method = "RPC")  # I'm removing the Granulocytes from the reference matrix
+
+print(paste("Saving results to ", getwd(), sep=""))
+
+file.name <- sapply(strsplit(file[1], "/"), "[", 10)
+
+save(ctp.pred, file = paste(file.name, "_epidish_ctp.Robject", sep = ""))
+```
+
+* **I first parsed the phenotype files into one .Robject data frame summarizing phenotypic information for all the datasets. I removed CTP ouliers from the data. I removed all individuals with +- 3SD of the mean value for each CTP: **
+
+```{r parse_data, echo = T, warning = F, message=F}
+# We have 11 cohorts: AUS, KCL, NL, SCZ1, SCZ2, SGPD, PEG, AIBL, ADNI, RA 
+all.disorders <- read_delim("data/all_disorders_covariates.txt", delim = "\t")
+
+# I have to parse the ADNI phenotype because this is a longitudinal cohort
+# Now need to keep only one time point...I'll chose the oldest time point because it's theoretically the more severe phenotype (so more congruent with AIBL)
+phen <- read_csv("data/pheno.adni.methyl.csv")
+phen <- phen[which(phen$barcodes %in% all.disorders$IID),]
+phen <- phen %>%
+  arrange(rid, desc(examdate)) %>%
+  distinct(rid, .keep_all = T)
+
+# This is soooo messy...
+adni <- all.disorders[which(all.disorders$cohort == "ADNI"),] 
+all.disorders <- all.disorders[-which(all.disorders$cohort == "ADNI"),] 
+adni  <- adni[which(adni$IID %in% phen$barcodes),] 
+
+all.disorders <- rbind(all.disorders, adni)
+
+# In AddNeuroMed there are four MCI samples that are fine for using in a baseline diagnosis analysis of CTL vs MCI vs AD, but are probably not alright for using in an analysis of converters
+all.disorders <- all.disorders %>% 
+  filter(!IID %in% c("8667053013_R04C02", "8622007177_R02C02", "8667053127_R04C02", "8667053088_R02C01"))
+
+addneuro <- all.disorders[which(all.disorders$cohort == "AddNeuroMed"),]
+
+addneuro$case.control <- recode_factor(addneuro$case.control, "0"="Control", "1"="MCI-MCI", "2"="MCI-AD", "3"="Case")
+
+all.disorders <- all.disorders[-which(all.disorders$IID %in% addneuro$IID),]
+
+all.disorders$case.control <- recode_factor(all.disorders$case.control, "0"="Control", "1"="Case", "2"="MCI")
+
+all.disorders <- rbind(all.disorders, addneuro)
+```
+
+```{r remove_outliers, echo =T, warning= F, message=F}
+# First multiply by 100 to get proportion in (%). Then I'll combine the Eosinophils + Neutrophil counts = Granulocytes
+multiply.ctp <- function(x) { x * 100}
+
+all.disorders <- all.disorders %>%
+  mutate(Gran = Neutro + Eosino) %>% 
+  select(-c(Neutro, Eosino)) %>%
+  mutate_at(c("B", "CD4T", "CD8T", "NK", "Mono", "Gran"), multiply.ctp) %>%
+  mutate(disorder = case_when(cohort %in% c("AUS", "KCL", "NL") ~ "ALS",
+                              cohort %in% c("SGPD", "PEG") ~ "PD",
+                              cohort %in% c("AIBL", "ADNI", "AddNeuroMed") ~ "AD",
+                              cohort %in% c("SCZ1", "SCZ2") ~ "SCZ",
+                              cohort == "RA" ~ "RA")) %>% 
+  mutate(cohort = fct_relevel(cohort, "AIBL", "ADNI", "AddNeuroMed", "AUS", "KCL", "NL", "SGPD", "PEG", "SCZ1", "SCZ2", "RA")) %>%
+  mutate(case.control = fct_relevel(case.control, "Control", "MCI", "MCI-MCI", "MCI-AD", "Case"))
+
+# Remove outliers
+sd <-  3
+all.disorders.no.out <- all.disorders %>%
+  filter(!abs(B - mean(B))/sd(B) > sd) %>%
+  filter(!abs(NK - mean(NK))/sd(NK) > sd) %>%
+  filter(!abs(CD4T - mean(CD4T))/sd(CD4T) > sd) %>%
+  filter(!abs(CD8T - mean(CD8T))/sd(CD8T) > sd) %>%
+  filter(!abs(Mono - mean(Mono))/sd(Mono) > sd) %>%
+  filter(!abs(Gran - mean(Gran))/sd(Gran) > sd)
+
+save(all.disorders.no.out, file = "data/phenotypes_for_all_disorders_BM_ctp_age_sex_smoking_score_without_outliers.Robject")
+```
+
+* **There are `r nrow(all.disorders) - nrow(all.disorders.no.out) ` CTP outliers in the datasets.**
+
+# Estimating effect sizes of CTP for each disorder
+***
+  
+> To estimate the effect sizes of CTP, in each disorder, I used logistic regression models, with case-control status as response variable. CTP (excluding CD8T, due to high number of zero values and redundancy in proportion data), sex, predicted age, smoking scores and study site were fitted as covariates in the models. 
+
+* **I will remove CD8T from analyses, due to high number of individuals with zero values, as this impacts the accuracy of logistic regression.**
+
+## Logistic regression models
+
+```{r binary_logistic_regression_ctp, echo =T, warning= F, message=F, results='asis'}
+# I will not include CD8T, because of redundancy and low abundance. 
+# It is also important to note the AIBL/ADNI cohort are categorical. In here I'm focusing on binary predictions
+log.ctp <- all.disorders.no.out %>%
+  filter(cohort == "AIBL" & case.control != "MCI" | cohort == "AUS" | cohort == "SGPD" | cohort == "SCZ1" | cohort == "RA") %>% # Get discovery cohorts
+  group_by(cohort) %>% 
+  group_modify(~ broom::tidy(glm(case.control ~ B + NK + CD4T + Mono + Gran  + Sex + pred.age + smoking.score, 
+                                 data = .x,
+                                 family=binomial(link="logit"))))
+
+write_csv(log.ctp, "multiple_logistic_regression_CTP.csv")
+```
+
+## Plot violinplots of CTP
+
+```{r violin_no_out, echo=T, fig.width=25, fig.height=25}
+# Number of cases and controls
+n.cases.controls.no.out <- all.disorders.no.out %>%
+  group_by(cohort, disorder) %>%
+  dplyr::count(case.control) %>%
+  mutate(case.control = recode_factor(case.control, "0"="Control", "1" = "Case", "2" = "MCI")) %>%
+  mutate(Ncases = case_when(case.control == "Case" ~ paste("Cases = ", prettyNum(n, big.mark = ","), sep = ""))) %>%
+  mutate(Ncontrols = case_when(case.control == "Control" ~ paste("Controls = ", prettyNum(n, big.mark = ","), sep = ""))) %>%
+  mutate(MCI = case_when(case.control == "MCI" ~ paste("MCI = ", prettyNum(n, big.mark = ","), sep = ""))) %>%
+  mutate(MCI_MCI = case_when(case.control == "MCI-MCI" ~ paste("MCI-MCI = ", prettyNum(n, big.mark = ","), sep = ""))) %>%
+  mutate(MCI_AD = case_when(case.control == "MCI-AD" ~ paste("MCI-AD = ", prettyNum(n, big.mark = ","), sep = ""))) 
+
+
+all.disorders.no.out %>%
+  select(case.control, B, NK, CD4T, CD8T, Mono, Gran, disorder, cohort) %>%
+  gather(key = "cell.type", value = "proportion", -case.control, -disorder, -cohort) %>%
+
+
+  # Plot
+  ggplot(aes(x = cell.type, 
+             y = proportion, 
+             fill = case.control)) +
+  geom_violin(alpha=0.5,
+              lwd = 0.8, 
+              scale = "width") +
+  geom_boxplot(width = 0.2, 
+               position = position_dodge(0.9),
+               outlier.shape = NA,
+               lwd = 0.8, 
+               alpha = 0.5) + 
+  facet_wrap(~cohort + disorder, ncol = 3) +
+  scale_fill_colorblind() + 
+  ylab("DNAm-derived cell-type proportion (%)") + 
+  xlab("Cell-type") + 
+  theme_bw() + 
+  geom_text(data = n.cases.controls.no.out, 
+            aes(x = 1.5, y = 103, 
+                label = Ncases),
+            inherit.aes = FALSE, 
+            size = 8) +  
+  geom_text(data = n.cases.controls.no.out, 
+            aes(x = 1.5, y = 95, 
+                label = Ncontrols), 
+            inherit.aes = FALSE, 
+            size = 8) +   
+  geom_text(data = n.cases.controls.no.out, 
+            aes(x = 1.5, y = 87, label = MCI), 
+            inherit.aes = FALSE, size = 8) + 
+  geom_text(data = n.cases.controls.no.out, 
+            aes(x = 1.5, y = 87, label = MCI_MCI), 
+            inherit.aes = FALSE, size = 8) + 
+  geom_text(data = n.cases.controls.no.out, 
+            aes(x = 1.5, y = 79, label = MCI_AD), 
+            inherit.aes = FALSE, size = 8) + 
+  theme(text = element_text(size = 20), 
+        axis.title = element_text(size = 30), 
+        axis.text = element_text(size=24),
+        legend.title = element_blank(),  
+        legend.position="bottom",
+        legend.text = element_text(margin = margin(r = 10, 
+                                                   unit = "pt"), 
+                                   size=30),
+        legend.key.size = unit(1.5, 
+                               'lines'),
+        strip.text = element_text(size = 24)) +
+  stat_summary(aes(x = cell.type, y = proportion, fill = case.control), 
+               fun.y=mean, 
+               geom="point", 
+               size=1, 
+               colour = "red",
+               show.legend = F, 
+               position = position_dodge(0.9))
+
+ggsave("results/figures/violinplots_epidish_ctp_all_disorders_no_outliers.png", width = 25, height = 25, unit = "in", dpi = 400)
+```
+
+## Plot violinplots of CTP for discovery cohorts
+
+```{r violin_no_out_disc_cohort, echo=T, fig.width=15, fig.height=10}
+n.cases.controls.no.out <- all.disorders.no.out %>%
+  filter(cohort %in% c("AIBL", "AUS", "SGPD", "SCZ1", "RA")) %>%
+  group_by(cohort, disorder) %>%
+  dplyr::count(case.control) %>%
+  mutate(case.control = recode_factor(case.control, "0"="Control", "1" = "Case", "2" = "MCI")) %>%
+  mutate(Ncases = case_when(case.control == "Case" ~ paste("Cases = ", prettyNum(n, big.mark = ","), sep = ""))) %>%
+  mutate(Ncontrols = case_when(case.control == "Control" ~ paste("Controls = ", prettyNum(n, big.mark = ","), sep = ""))) %>%
+  mutate(MCI = case_when(case.control == "MCI" ~ paste("MCI = ", prettyNum(n, big.mark = ","), sep = ""))) %>%
+  mutate(MCI_MCI = case_when(case.control == "MCI-MCI" ~ paste("MCI-MCI = ", prettyNum(n, big.mark = ","), sep = ""))) %>%
+  mutate(MCI_AD = case_when(case.control == "MCI-AD" ~ paste("MCI-AD = ", prettyNum(n, big.mark = ","), sep = ""))) 
+  
+all.disorders.no.out %>%
+  select(case.control, B, NK, CD4T, CD8T, Mono, Gran, disorder, cohort) %>%
+  filter(cohort %in% c("AIBL", "AUS", "SGPD", "SCZ1", "RA")) %>%
+  gather(key = "cell.type", value = "proportion", -case.control, -disorder, -cohort) %>%
+
+
+  # Plot
+  ggplot(aes(x = cell.type, 
+             y = proportion, 
+             fill = case.control)) +
+  geom_violin(alpha=0.5,
+              lwd = 0.8, 
+              scale = "width") +
+  geom_boxplot(width = 0.2, 
+               position = position_dodge(0.9),
+               outlier.shape = NA,
+               lwd = 0.8, 
+               alpha = 0.5) + 
+  facet_wrap(~cohort + disorder, ncol = 3) +
+  scale_fill_colorblind() + 
+  ylab("DNAm-derived cell-type proportion (%)") + 
+  xlab("Cell-type") + 
+  theme_bw() + 
+  geom_text(data = n.cases.controls.no.out, 
+            aes(x = 1.5, y = 103, 
+                label = Ncases),
+            inherit.aes = FALSE, 
+            size = 8) +  
+  geom_text(data = n.cases.controls.no.out, 
+            aes(x = 1.5, y = 95, 
+                label = Ncontrols), 
+            inherit.aes = FALSE, 
+            size = 8) +   
+  geom_text(data = n.cases.controls.no.out, 
+            aes(x = 1.5, y = 87, label = MCI), 
+            inherit.aes = FALSE, size = 8) + 
+  geom_text(data = n.cases.controls.no.out, 
+            aes(x = 1.5, y = 87, label = MCI_MCI), 
+            inherit.aes = FALSE, size = 8) + 
+  geom_text(data = n.cases.controls.no.out, 
+            aes(x = 1.5, y = 79, label = MCI_AD), 
+            inherit.aes = FALSE, size = 8) + 
+  theme(text = element_text(size = 20), 
+        axis.title = element_text(size = 30), 
+        axis.text = element_text(size=24),
+        legend.title = element_blank(),  
+        legend.position="bottom",
+        legend.text = element_text(margin = margin(r = 10, 
+                                                   unit = "pt"), 
+                                   size=30),
+        legend.key.size = unit(1.5, 
+                               'lines'),
+        strip.text = element_text(size = 24)) +
+  stat_summary(aes(x = cell.type, y = proportion, fill = case.control), 
+               fun.y=mean, 
+               geom="point", 
+               size=1, 
+               colour = "red",
+               show.legend = F, 
+               position = position_dodge(0.9))
+
+ggsave("results/figures/violinplots_epidish_ctp_discovery_cohorts_no_outliers.png", width = 20, height = 12, unit = "in", dpi = 400)
+```
+
+# Out-of-sample classification
+
+***
+> I then took the effect sizes from the previous models (log odds) for each CTP, first between disorders and then within disorder (i.e., each dataset in ALS, PD and SCZ) and calculated a methylation profile score (MPS) in the other samples (out-of-sample classification). The MPS is thus $sum_{i=1}^{m} b_i x CTP_i$. I calculated both composite CTP scores and CTP specific for lymphocytes, monocytes and granulocytes. Then I plotted the ROC curves with these MPS, at different thresholds and calculated the AUC.
+
+***
+## Estimate CTP effect sizes 
+
+```{r glm_CTP, echo = T, message=F, warning=F}
+# Get log odds
+coeffs.aibl <- log.ctp %>%
+  filter(cohort == "AIBL") %>%
+  slice(2:6) %>% 
+  pull(estimate) %>%
+  set_names(c("B", "NK", "CD4T", "Mono", "Gran"))
+  
+coeffs.aus <- log.ctp %>%
+  filter(cohort == "AUS") %>%
+  slice(2:6) %>% 
+  pull(estimate) %>%
+  set_names(c("B", "NK", "CD4T", "Mono", "Gran"))
+
+coeffs.sgpd <- log.ctp%>%
+  filter(cohort == "SGPD") %>%
+  slice(2:6) %>% 
+  pull(estimate) %>%
+  set_names(c("B", "NK", "CD4T", "Mono", "Gran"))
+
+coeffs.scz1 <- log.ctp %>%
+  filter(cohort == "SCZ1") %>%
+  slice(2:6) %>% 
+  pull(estimate) %>%
+  set_names(c("B", "NK", "CD4T", "Mono", "Gran"))
+
+coeffs.ra <- log.ctp %>%
+  filter(cohort == "RA") %>%
+  slice(2:6) %>% 
+  pull(estimate) %>%
+  set_names(c("B", "NK", "CD4T", "Mono", "Gran"))
+```
+
+## Plot AUC 
+
+* **The results for within and between disorder classification, using composite CTP scores, can be found below:**
+
+```{r plot_AUC_CTP, echo=T, message=F, warning=F, fig.width=15, fig.height=15}
+# Calculate CTP-scores
+myColors <- c(pal_jco()(5))
+names(myColors) <- c("AD", "ALS", "PD", "SCZ", "RA")
+
+# AIBL
+aibl.ctp.pred<- all.disorders.no.out %>%
+  select(IID, case.control, cohort,disorder, B, NK, CD4T, Mono, Gran) %>%
+  filter(cohort != "AIBL" & case.control != "MCI" & case.control != "MCI-MCI" & case.control != "MCI-AD") %>%
+  group_by(cohort) %>%
+  group_map(~ mps(coeffs.aibl, .), keep = TRUE) 
+
+pretty.glm.aibl.ctp <- lapply(aibl.ctp.pred, 
+                     function(x) { broom::tidy(glm(case.control ~ CTP_SCORE, 
+                                                   x,
+                                                   family = binomial(link = "logit")))}) # Can check p-values from here
+
+
+aibl.ctp.auc <- data.frame("AUC" = unlist(lapply(aibl.ctp.pred, 
+                                                      function(x){round(roc(droplevels(x$case.control), 
+                                                                            x$CTP_SCORE)$auc,2)
+                                                        })),
+                                "cohort" = c("ADNI", "AddNeuroMed",
+                                             "AUS", "KCL", "NL", 
+                                             "SGPD", "PEG", 
+                                             "SCZ1", "SCZ2", 
+                                             "RA"),
+                          
+                                "disorder" = c("AD", "AD",
+                                             "ALS", "ALS", "ALS",
+                                             "PD", "PD", 
+                                             "SCZ", "SCZ", 
+                                             "RA"),                          
+                                "CI95_1" = unlist(lapply(aibl.ctp.pred, 
+                                                      function(x){round(ci.auc(roc(droplevels(x$case.control), 
+                                                                            x$CTP_SCORE))[1],2)
+                                                        })),
+                                
+                                "CI95_2" = unlist(lapply(aibl.ctp.pred, 
+                                                      function(x){round(ci.auc(roc(droplevels(x$case.control), 
+                                                                            x$CTP_SCORE))[3],2)
+                                                        })),
+                                "p.val" = paste("p = ", formatC(as.numeric(unlist(pretty.glm.aibl.ctp)[grep("p.value2",names(unlist(pretty.glm.aibl.ctp)))]), 
+                                                                    format = "e", digits = 2), sep ="")
+                                )
+
+
+# Plot barplots AUC 
+aibl.ctp.plot <- ggplot(aibl.ctp.auc, 
+       aes(x = reorder(cohort, 
+                       AUC, 
+                       FUN = max),
+           y = AUC)) + 
+  geom_bar(stat = "identity", 
+           aes(fill = reorder(disorder, AUC, FUN = max)),
+           size = 3) + 
+  scale_fill_manual(values = alpha(myColors, 0.9)) + 
+  geom_text(aes(x = reorder(cohort, AUC, FUN = max),
+                y = CI95_2 + 0.03, 
+                label = AUC), 
+            position =  position_dodge(0.9), 
+            vjust = -1, 
+            size = 3.6) +
+  geom_text(aes(x = reorder(cohort, AUC, FUN = max), 
+                y = 1, 
+                label = p.val), 
+            position =  position_dodge(0.9),
+            size = 3.6) +
+  geom_errorbar(aes(ymin = CI95_1, 
+                    ymax = CI95_2), 
+                position = position_dodge(0.9), 
+                size = 0.4,
+                width = 0.2) +
+  geom_hline(yintercept = 0.5, 
+             lty = 2, 
+             col = "darkred", 
+             alpha = 0.8) +
+  ylim(c(0,1.1)) + 
+  ylab("") + 
+  xlab("Target cohort") +
+  coord_flip() + 
+  labs(title = "AIBL") + 
+  theme_bw() + 
+  theme(text = element_text(size = 14),
+        legend.position = "none",
+        plot.title = element_text(face = "bold")) 
+
+# AUS
+aus.ctp.pred<- all.disorders.no.out %>%
+  select(IID, case.control, cohort,disorder, B, NK, CD4T, Mono, Gran) %>%
+  filter(cohort != "AUS" & case.control != "MCI" & case.control != "MCI-MCI" & case.control != "MCI-AD") %>%
+  group_by(cohort) %>%
+  group_map(~ mps(coeffs.aus, .), keep = TRUE) 
+
+pretty.glm.aus.ctp <- lapply(aus.ctp.pred, 
+                     function(x) { broom::tidy(glm(case.control ~ CTP_SCORE, 
+                                                   x,
+                                                   family = binomial(link = "logit")))}) # Can check p-values from here
+
+aus.ctp.auc <- data.frame("AUC" = unlist(lapply(aus.ctp.pred, 
+                                                      function(x){round(roc(droplevels(x$case.control), 
+                                                                            x$CTP_SCORE)$auc,2)
+                                                        })),
+                                "cohort" = c("AIBL", "ADNI", "AddNeuroMed",
+                                             "KCL", "NL", 
+                                             "SGPD", "PEG", 
+                                             "SCZ1", "SCZ2", 
+                                             "RA"),
+                          
+                                "disorder" = c("AD", "AD", "AD",
+                                             "ALS", "ALS", 
+                                             "PD", "PD", 
+                                             "SCZ", "SCZ", 
+                                             "RA"),                          
+                                "CI95_1" = unlist(lapply(aus.ctp.pred, 
+                                                      function(x){round(ci.auc(roc(droplevels(x$case.control), 
+                                                                            x$CTP_SCORE))[1],2)
+                                                        })),
+                                
+                                "CI95_2" = unlist(lapply(aus.ctp.pred, 
+                                                      function(x){round(ci.auc(roc(droplevels(x$case.control), 
+                                                                            x$CTP_SCORE))[3],2)
+                                                        })),
+                                "p.val" = paste("p = ", formatC(as.numeric(unlist(pretty.glm.aus.ctp)[grep("p.value2",names(unlist(pretty.glm.aus.ctp)))]), 
+                                                                    format = "e", digits = 2), sep ="")
+                                )
+
+
+# Plot barplots AUC 
+aus.ctp.plot <- ggplot(aus.ctp.auc, 
+       aes(x = reorder(cohort, 
+                       AUC, 
+                       FUN = max),
+           y = AUC)) + 
+  geom_bar(stat = "identity", 
+           aes(fill = reorder(disorder, AUC, FUN = max)),
+           size = 3,
+           position = position_dodge(0.9)) + 
+  scale_fill_manual(values = alpha(myColors, 0.9)) + 
+  geom_text(aes(x = reorder(cohort, AUC, FUN = max),
+                y = CI95_2 + 0.03, 
+                label = AUC), 
+            position =  position_dodge(0.9), 
+            vjust = -1, 
+            size = 3.6) +
+  geom_text(aes(x = reorder(cohort, AUC, FUN = max), 
+                y = 1, 
+                label = p.val), 
+            position =  position_dodge(0.9),
+            size = 3.6) +
+  geom_errorbar(aes(ymin = CI95_1, 
+                    ymax = CI95_2), 
+                position = position_dodge(0.9), 
+                size = 0.4,
+                width = 0.2) +
+  geom_hline(yintercept = 0.5, 
+             lty = 2, 
+             col = "darkred", 
+             alpha = 0.8) +
+  ylim(c(0,1.1)) + 
+  xlab("") +
+  ylab("") + 
+  coord_flip() + 
+  labs(title = "AUS") + 
+  theme_bw() + 
+  theme(text = element_text(size = 14),
+        legend.title = element_blank(),
+        legend.position = "bottom",
+        legend.text = element_text(size = 16),
+        plot.title = element_text(face = "bold")) 
+
+# SGPD
+sgpd.ctp.pred<- all.disorders.no.out %>%
+  select(IID, case.control, cohort, disorder, B, NK, CD4T, Mono, Gran) %>%
+  filter(cohort != "SGPD" & case.control != "MCI" & case.control != "MCI-MCI" & case.control != "MCI-AD") %>%
+  group_by(cohort) %>%
+  group_map(~ mps(coeffs.sgpd, .), keep = TRUE) 
+
+pretty.glm.sgpd.ctp <- lapply(sgpd.ctp.pred, 
+                     function(x) { broom::tidy(glm(case.control ~ CTP_SCORE, 
+                                                   x,
+                                                   family = binomial(link = "logit")))}) # Can check p-values from here
+
+
+sgpd.ctp.auc <- data.frame("AUC" = unlist(lapply(sgpd.ctp.pred, 
+                                                      function(x){round(roc(droplevels(x$case.control), 
+                                                                            x$CTP_SCORE)$auc,2)
+                                                        })),
+                                "cohort" = c("AIBL", "ADNI", "AddNeuroMed",
+                                             "AUS", "KCL", "NL", 
+                                             "PEG", 
+                                             "SCZ1", "SCZ2", 
+                                             "RA"),
+                          
+                                "disorder" = c("AD",  "AD", "AD",
+                                             "ALS", "ALS", "ALS",
+                                             "PD",
+                                             "SCZ", "SCZ", 
+                                             "RA"),                          
+                                "CI95_1" = unlist(lapply(sgpd.ctp.pred, 
+                                                      function(x){round(ci.auc(roc(droplevels(x$case.control), 
+                                                                            x$CTP_SCORE))[1],2)
+                                                        })),
+                                
+                                "CI95_2" = unlist(lapply(sgpd.ctp.pred, 
+                                                      function(x){round(ci.auc(roc(droplevels(x$case.control), 
+                                                                            x$CTP_SCORE))[3],2)
+                                                        })),
+                                "p.val" = paste("p = ", formatC(as.numeric(unlist(pretty.glm.sgpd.ctp)[grep("p.value2",names(unlist(pretty.glm.sgpd.ctp)))]), 
+                                                                    format = "e", digits = 2), sep ="")
+                                )
+
+
+# Plot barplots AUC 
+sgpd.ctp.plot <- ggplot(sgpd.ctp.auc, 
+       aes(x = reorder(cohort, 
+                       AUC, 
+                       FUN = max),
+           y = AUC)) + 
+  geom_bar(stat = "identity", 
+           aes(fill = reorder(disorder, AUC, FUN = max)),
+           size = 3) + 
+  scale_fill_manual(values = alpha(myColors, 0.9)) + 
+  geom_text(aes(x = reorder(cohort, AUC, FUN = max),
+                y = CI95_2 + 0.03, 
+                label = AUC), 
+            position =  position_dodge(0.9), 
+            vjust = -1, 
+            size = 3.6) +
+  geom_text(aes(x = reorder(cohort, AUC, FUN = max), 
+                y = 1, 
+                label = p.val), 
+            position =  position_dodge(0.9),
+            size = 3.6) +
+  geom_errorbar(aes(ymin = CI95_1, 
+                    ymax = CI95_2), 
+                position = position_dodge(0.9), 
+                size = 0.4,
+                width = 0.2) +
+  geom_hline(yintercept = 0.5, 
+             lty = 2, 
+             col = "darkred", 
+             alpha = 0.8) +
+  ylim(c(0,1.1)) + 
+  xlab("Target cohort") +
+  ylab("") + 
+  coord_flip() + 
+  labs(title = "SGPD") + 
+  theme_bw() + 
+  theme(text = element_text(size = 14),
+        legend.position = "none",
+        plot.title = element_text(face = "bold")) 
+
+# SCZ1
+scz1.ctp.pred <- all.disorders.no.out %>%
+  select(IID, case.control, cohort, disorder, B, NK, CD4T, Mono, Gran) %>%
+  filter(cohort != "SCZ1" & case.control != "MCI" & case.control != "MCI-MCI" & case.control != "MCI-AD") %>%
+  group_by(cohort) %>%
+  group_map(~ mps(coeffs.scz1, .), keep = TRUE) 
+
+pretty.glm.scz1.ctp <- lapply(scz1.ctp.pred, 
+                     function(x) { broom::tidy(glm(case.control ~ CTP_SCORE, 
+                                                   x,
+                                                   family = binomial(link = "logit")))}) # Can check p-values from here
+
+
+scz1.ctp.auc <- data.frame("AUC" = unlist(lapply(scz1.ctp.pred, 
+                                                      function(x){round(roc(droplevels(x$case.control), 
+                                                                            x$CTP_SCORE)$auc,2)
+                                                        })),
+                                "cohort" = c("AIBL", "ADNI", "AddNeuroMed",
+                                             "AUS", "KCL", "NL", 
+                                             "SGPD", "PEG", 
+                                             "SCZ2", 
+                                             "RA"),
+                          
+                                "disorder" = c("AD", "AD", "AD",
+                                             "ALS", "ALS", "ALS",
+                                             "PD", "PD", 
+                                             "SCZ", 
+                                             "RA"),                          
+                                "CI95_1" = unlist(lapply(scz1.ctp.pred, 
+                                                      function(x){round(ci.auc(roc(droplevels(x$case.control), 
+                                                                            x$CTP_SCORE))[1],2)
+                                                        })),
+                                
+                                "CI95_2" = unlist(lapply(scz1.ctp.pred, 
+                                                      function(x){round(ci.auc(roc(droplevels(x$case.control), 
+                                                                            x$CTP_SCORE))[3],2)
+                                                        })),
+                                "p.val" = paste("p = ", formatC(as.numeric(unlist(pretty.glm.scz1.ctp)[grep("p.value2",names(unlist(pretty.glm.scz1.ctp)))]), 
+                                                                    format = "e", digits = 2), sep ="")
+                                )
+
+
+# Plot barplots AUC 
+scz1.ctp.plot <- ggplot(scz1.ctp.auc, 
+       aes(x = reorder(cohort, 
+                       AUC, 
+                       FUN = max),
+           y = AUC)) + 
+  geom_bar(stat = "identity", 
+           aes(fill = reorder(disorder, AUC, FUN = max)),
+           size = 3) + 
+  scale_fill_manual(values = alpha(myColors, 0.9)) + 
+  geom_text(aes(x = reorder(cohort, AUC, FUN = max),
+                y = CI95_2 + 0.03, 
+                label = AUC), 
+            position =  position_dodge(0.9), 
+            vjust = -1, 
+            size = 3.6) +
+  geom_text(aes(x = reorder(cohort, AUC, FUN = max), 
+                y = 1, 
+                label = p.val), 
+            position =  position_dodge(0.9),
+            size = 3.6) +
+  geom_errorbar(aes(ymin = CI95_1, 
+                    ymax = CI95_2), 
+                position = position_dodge(0.9), 
+                size = 0.4,
+                width = 0.2) +
+  geom_hline(yintercept = 0.5, 
+             lty = 2, 
+             col = "darkred", 
+             alpha = 0.8) +
+  ylim(c(0,1.1)) + 
+  coord_flip() + 
+  xlab("") +
+  labs(title = "SCZ1") + 
+  theme_bw() + 
+  theme(text = element_text(size = 14),
+        legend.position = "none",
+        plot.title = element_text(face = "bold")) 
+
+# RA
+ra.ctp.pred <- all.disorders.no.out %>%
+  select(IID, case.control, cohort, disorder, B, NK, CD4T, Mono, Gran) %>%
+  filter(cohort != "RA" & case.control != "MCI" & case.control != "MCI-MCI" & case.control != "MCI-AD") %>%
+  group_by(cohort) %>%
+  group_map(~ mps(coeffs.ra, .), keep = TRUE) 
+
+pretty.glm.ra.ctp <- lapply(ra.ctp.pred, 
+                     function(x) { broom::tidy(glm(case.control ~ CTP_SCORE, 
+                                                   x,
+                                                   family = binomial(link = "logit")))}) # Can check p-values from here
+
+
+ra.ctp.auc <- data.frame("AUC" = unlist(lapply(ra.ctp.pred, 
+                                                      function(x){round(roc(droplevels(x$case.control), 
+                                                                            x$CTP_SCORE)$auc,2)
+                                                        })),
+                                "cohort" = c("AIBL", "ADNI", "AddNeuroMed",
+                                             "AUS", "KCL", "NL", 
+                                             "SGPD", "PEG", 
+                                             "SCZ1", "SCZ2"),
+                          
+                                "disorder" = c("AD", "AD", "AD",
+                                             "ALS", "ALS", "ALS",
+                                             "PD", "PD", 
+                                             "SCZ","SCZ"),                          
+                                "CI95_1" = unlist(lapply(ra.ctp.pred, 
+                                                      function(x){round(ci.auc(roc(droplevels(x$case.control), 
+                                                                            x$CTP_SCORE))[1],2)
+                                                        })),
+                                
+                                "CI95_2" = unlist(lapply(ra.ctp.pred, 
+                                                      function(x){round(ci.auc(roc(droplevels(x$case.control), 
+                                                                            x$CTP_SCORE))[3],2)
+                                                        })),
+                                "p.val" = paste("p = ", formatC(as.numeric(unlist(pretty.glm.ra.ctp)[grep("p.value2",names(unlist(pretty.glm.ra.ctp)))]), 
+                                                                    format = "e", digits = 2), sep ="")
+                                )
+
+
+# Plot barplots AUC 
+ra.ctp.plot <- ggplot(ra.ctp.auc, 
+       aes(x = reorder(cohort, 
+                       AUC, 
+                       FUN = max),
+           y = AUC)) + 
+  geom_bar(stat = "identity", 
+           aes(fill = reorder(disorder, AUC, FUN = max)),
+           size = 3) + 
+  scale_fill_manual(values = alpha(myColors, 0.9)) + 
+  geom_text(aes(x = reorder(cohort, AUC, FUN = max),
+                y = CI95_2 + 0.03, 
+                label = AUC), 
+            position =  position_dodge(0.9), 
+            vjust = -1, 
+            size = 3.6) +
+  geom_text(aes(x = reorder(cohort, AUC, FUN = max), 
+                y = 1, 
+                label = p.val), 
+            position =  position_dodge(0.9),
+            size = 3.6) +
+  geom_errorbar(aes(ymin = CI95_1, 
+                    ymax = CI95_2), 
+                position = position_dodge(0.9), 
+                size = 0.4,
+                width = 0.2) +
+  geom_hline(yintercept = 0.5, 
+             lty = 2, 
+             col = "darkred", 
+             alpha = 0.8) +
+  ylim(c(0,1.1)) + 
+  coord_flip() + 
+  ylab("AUC") + 
+  xlab("Target cohort") +
+  labs(title = "RA") + 
+  theme_bw() + 
+  theme(text = element_text(size = 14),
+        legend.position = "none",
+        plot.title = element_text(face = "bold")) 
+
+ctp.legend <- get_legend(aus.ctp.plot)
+
+aus.ctp.plot <- aus.ctp.plot + theme(legend.position = "none")
+
+plot_grid(plot_grid(aibl.ctp.plot, aus.ctp.plot, sgpd.ctp.plot, scz1.ctp.plot, ra.ctp.plot, ncol = 2, labels = ""), ctp.legend, nrow = 2, rel_heights = c(0.9, 0.1))
+
+ggsave("results/figures/ctp_AUC_within_between_traits.png", width = 15, height = 15)
+```
+
+## Violinplots CTP-scores
+```{r violinplot_CTP_scores, echo = T, warning=F, message=F, fig.width=15, fig.height=10}
+# AUS to others
+aus.ctp.pred.violin <- all.disorders.no.out %>%
+  select(IID, case.control, cohort,disorder, B, NK, CD4T, Mono, Gran) %>%
+  filter(cohort != "AUS") %>%
+  group_by(cohort) %>%
+  group_map(~ mps(coeffs.aus, .), 
+            keep = TRUE) %>%
+  Reduce(rbind, .) %>%
+  ggplot(aes(x = case.control, 
+             y = CTP_SCORE, 
+             fill = case.control)) + 
+  geom_violin(alpha = 0.5) + 
+  geom_boxplot(width = 0.1, 
+               alpha = 0.5, 
+               outlier.shape = NA) + 
+  scale_fill_colorblind() + 
+  facet_wrap(~cohort + disorder, 
+             scales = "free_x", ncol = 5) +
+  xlab("Case-control status") + 
+  ylab("CTP-scores") + 
+  labs(title = "AUS") + 
+  stat_summary(fun.y=mean, 
+               geom="point", 
+               size=0.6, 
+               colour = "red",
+               show.legend = F, 
+               position = position_dodge(0.9)) + 
+  theme_bw() + 
+  theme(legend.title = element_blank(), 
+        legend.position = "bottom",
+        legend.text = element_text(size = 16),
+        axis.text.x = element_text(angle = 45, 
+                                   hjust =1),
+        plot.title = element_text(face = "bold")) 
+
+# AIBL to others ----
+aibl.ctp.pred.violin <- all.disorders.no.out %>%
+  select(IID, case.control, cohort,disorder, B, NK, CD4T, Mono, Gran) %>%
+  filter(cohort != "AIBL") %>%
+  group_by(cohort) %>%
+  group_map(~ mps(coeffs.aibl, .), 
+            keep = TRUE) %>%
+  Reduce(rbind, .) %>%
+  ggplot(aes(x = case.control, 
+             y = CTP_SCORE, 
+             fill = case.control)) + 
+  geom_violin(alpha = 0.5) + 
+  geom_boxplot(width = 0.1, 
+               alpha = 0.5, 
+               outlier.shape = NA) + 
+  scale_fill_colorblind() + 
+  facet_wrap(~cohort + disorder, 
+             scales = "free_x", ncol = 5) +
+  xlab("Case-control status") + 
+  ylab("CTP-scores") + 
+  labs(title = "AIBL") + 
+  stat_summary(fun.y=mean, 
+               geom="point", 
+               size=0.6, 
+               colour = "red",
+               show.legend = F, 
+               position = position_dodge(0.9)) + 
+  theme_bw() + 
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 45, 
+                                   hjust =1),
+        plot.title = element_text(face = "bold")) 
+
+# SGPD to others ----
+sgpd.ctp.pred.violin <- all.disorders.no.out %>%
+  select(IID, case.control, cohort,disorder, B, NK, CD4T, Mono, Gran) %>%
+  filter(cohort != "SGPD") %>%
+  group_by(cohort) %>%
+  group_map(~ mps(coeffs.sgpd, .), 
+            keep = TRUE) %>%
+  Reduce(rbind, .) %>%
+  ggplot(aes(x = case.control, 
+             y = CTP_SCORE, 
+             fill = case.control)) + 
+  geom_violin(alpha = 0.5) + 
+  geom_boxplot(width = 0.1, 
+               alpha = 0.5, 
+               outlier.shape = NA) + 
+  scale_fill_colorblind() + 
+  facet_wrap(~cohort + disorder, 
+             scales = "free_x", ncol = 5) +
+  xlab("Case-control status") + 
+  ylab("CTP-scores") + 
+  labs(title = "SGPD") + 
+  stat_summary(fun.y=mean, 
+               geom="point", 
+               size=0.6, 
+               colour = "red",
+               show.legend = F, 
+               position = position_dodge(0.9)) + 
+  theme_bw() + 
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 45, 
+                                   hjust =1),
+        plot.title = element_text(face = "bold")) 
+
+#SCZ1 to others ----
+scz1.ctp.pred.violin <- all.disorders.no.out %>%
+  select(IID, case.control, cohort,disorder, B, NK, CD4T, Mono, Gran) %>%
+  filter(cohort != "SCZ1") %>%
+  group_by(cohort) %>%
+  group_map(~ mps(coeffs.scz1, .), 
+            keep = TRUE) %>%
+  Reduce(rbind, .) %>%
+  ggplot(aes(x = case.control, 
+             y = CTP_SCORE, 
+             fill = case.control)) + 
+  geom_violin(alpha = 0.5) + 
+  geom_boxplot(width = 0.1, 
+               alpha = 0.5, 
+               outlier.shape = NA) + 
+  scale_fill_colorblind() + 
+  facet_wrap(~cohort + disorder, 
+             scales = "free_x", ncol = 5) +
+  xlab("Case-control status") + 
+  ylab("CTP-scores") + 
+  labs(title = "SCZ1") + 
+  stat_summary(fun.y=mean, 
+               geom="point", 
+               size=0.6, 
+               colour = "red",
+               show.legend = F, 
+               position = position_dodge(0.9)) + 
+  theme_bw() + 
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 45, 
+                                   hjust =1),
+        plot.title = element_text(face = "bold")) 
+
+# RA to others ----
+ra.ctp.pred.violin <- all.disorders.no.out %>%
+  select(IID, case.control, cohort,disorder, B, NK, CD4T, Mono, Gran) %>%
+  filter(cohort != "RA") %>%
+  group_by(cohort) %>%
+  group_map(~ mps(coeffs.ra, .), 
+            keep = TRUE) %>%
+  Reduce(rbind, .) %>%
+  ggplot(aes(x = case.control, 
+             y = CTP_SCORE, 
+             fill = case.control)) + 
+  geom_violin(alpha = 0.5) + 
+  geom_boxplot(width = 0.1, 
+               alpha = 0.5, 
+               outlier.shape = NA) + 
+  scale_fill_colorblind() + 
+  facet_wrap(~cohort + disorder, 
+             scales = "free_x", ncol = 5) +
+  xlab("Case-control status") + 
+  ylab("CTP-scores") + 
+  labs(title = "RA") + 
+  stat_summary(fun.y=mean, 
+               geom="point", 
+               size=0.6, 
+               colour = "red",
+               show.legend = F, 
+               position = position_dodge(0.9)) + 
+  theme_bw() + 
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 45, 
+                                   hjust =1),
+        plot.title = element_text(face = "bold")) 
+
+legend <- get_legend(aus.ctp.pred.violin)
+
+aus.ctp.pred.violin <- aus.ctp.pred.violin + theme(legend.position = "none")
+
+plot_grid(plot_grid(aus.ctp.pred.violin, aibl.ctp.pred.violin, sgpd.ctp.pred.violin, scz1.ctp.pred.violin, ra.ctp.pred.violin, labels = "AUTO"), ncol = 1, legend, rel_heights = c(0.9, 0.1))
+ggsave("results/figures/violinplots_ctp_scores.png", width = 15, height = 10)
+```
+
+# Assessing if disorder-specific CTP scores reflect inflammatory signals
+
+***
+
+> The original Lothian Birth Cohorts of 1921 (LBC1921) and 1936 (LBC1936) were designed as follow-up studies to the Scottish Mental Surveys of 1932 (SMS1932) and 1947 (SMS1947), respectively. [Recently a profile update has been published, due to new types of data collected on the LBCs, especially: whole-genome sequencing, longitudinal DNA methylation, longitudinal gene expression, lipidomics, post-mortem brain tissue, induced pluripotent stem cells (iPSC), inflammatory markers, oxidative stress markers, life course geographical information, objectively measured physical activity and sedentary behaviour, and dementia ascertainment](https://academic.oup.com/ije/article/47/4/1042/4931207). In the following analyses I focused on DNA methylation data collected in the LBC36 (Wave 1), measured with the Illumina 450k array. First, I calculate correlation between disease-specific CTP scores and well-known inflammatory markers (measured by the OLINK inflammatory panel). Afterwards, I will once again calculate CTP-derived MPS for each individual and assess their impact on all-mortality rate, using Cox-proportional Hazards models. 
+
+***
+
+
+## Correlation between disease-specific CTP scores and well-known inflammatory markers
+
+* **First I'll have to parse the phenotype files, which include the OLINK inflammatory markers panel, DNA methylation and blood cell counts. They were all measured in LBC36 (W1).** 
+
+```{r parse_files_ctp_score_inflammatory_markers_lbc36, echo =T, warning=F, message=F, fig.width=20, fig.height=18}
+#Parsing covariate files
+# Load the epidish CTP for the LBCW1
+load("results/epidish_ctp/LBCW1_qced_normalized_DNAm.rds_epidish_ctp.Robject")
+
+# Load phenotypes and arrange in data frame
+lbc.ctp <- data.frame(ctp.pred$estF) 
+
+lbc36.ctp <- as_tibble(rownames_to_column(lbc.ctp)) %>% # If I pipe above it doesn's get the column names...
+  filter(grepl("LBC36", rowname)) %>%
+  mutate(Gran = Neutro + Eosino) %>%
+  mutate_at(c("B", "NK", "CD4T", "CD8T", "Mono", "Gran"), multiply.ctp) %>%
+  filter(!abs(B - mean(B))/sd(B) > sd) %>% # Remove CTP outliers; sd = 3 at the moment
+  filter(!abs(NK - mean(NK))/sd(NK) > sd) %>%
+  filter(!abs(CD4T - mean(CD4T))/sd(CD4T) > sd) %>%
+  filter(!abs(CD8T - mean(CD8T))/sd(CD8T) > sd) %>%
+  filter(!abs(Mono - mean(Mono))/sd(Mono) > sd) %>%
+  filter(!abs(Gran - mean(Gran))/sd(Gran) > sd) 
+colnames(lbc36.ctp)[1] <- "IID"
+
+#dim(lbc36.ctp)
+#[1] 942   6
+
+lbc36.smok <- read_delim("data/LBCW1_riccardo_smoking_scores.profile", delim = "\t") %>%
+  select("IID", "SCORE") %>%
+  set_names("IID", "SMOKING_SCORE")
+
+lbc36.sex <- read_delim("data/LBCW1_sex.txt", delim = "\t")
+
+lbc36.real.cc <- read_delim("data/LBCW1_real_ctc.txt", delim = "\t") %>%
+  mutate(Gran = neutrophils + eosinophils + basophils) %>%
+  select(-FID, -neutrophils, -eosinophils, -basophils) %>%
+  filter(complete.cases(.)) %>%
+  set_names("IID", "REAL_LYMPHO", "REAL_MONO", "REAL_GRAN")
+
+lbc36.age <- read_csv("data/lbc36_death.csv") %>%
+  mutate(age_years = agedays_w1/365.25) %>%
+  select(lbc36no, age_years) %>%
+  set_names("IID", "age_years")
+
+# Scores from  MOMENT meta analyses ALS + PD + AD
+lbc36.mom.meta <- read.table("data/LBCW1_AD_ALS_PD_METAL_MOMENT_scores.profile", header=T) %>%
+  mutate(SCORE = SCORE * CNT) %>%
+  select(IID, SCORE) %>%
+  set_names("IID", "NDs_MOMENT_SCORE")
+
+# Scores from  MOA meta analyses ALS + PD + AD
+lbc36.moa.meta <- read.table("data/LBCW1_AD_ALS_PD_METAL_MOA_scores.profile", header=T) %>%
+  mutate(SCORE = SCORE * CNT) %>%
+  select(IID, SCORE) %>%
+  set_names("IID", "NDs_MOA_SCORE")
+
+# OLINK INFLAMMATORY PANEL and poly-epigenetic score from CRP
+inflammation.markers <- as_tibble(read.xlsx("data/LBC1936_wave1_Olink_inflammatory_final_19-7-19.xlsx", 1)) 
+colnames(inflammation.markers)[1] <- "IID"
+
+lod <- inflammation.markers[nrow(inflammation.markers),] %>% # limit of detection values
+  select(-IID, -Plate.ID, -QC.Warning)
+
+# apply(is.na(inflammation.markers), 2, which)
+# BDNF had all NA values and CCL3 had some NA values. I will remove the BDNF column and the individuals with NA values for CCL3.
+inflammation.markers <- inflammation.markers %>%
+  slice(1:n()-1) %>%
+  select(-Plate.ID, -QC.Warning) %>%
+  filter(IID %in% lbc36.ctp$IID) %>%
+  filter(!is.na(CCL3)) %>%
+  select(-BDNF)
+
+#dim(inflammation.markers)
+#[1] 909  92
+
+lod <- lod[,-which(colnames(lod) == "BDNF")] #I will remove BDNF column from here, because it's NA
+
+# Some of these values are below the limit of detection of the OLINK panel, which is calculated for each inflammatory marker. I use the loop below to find out how many of these samples are below the detection limit.
+
+count = 0
+excl.col = c()
+for (i in 1:length(lod)){ # iterating over columns
+  
+  for(j in 1:nrow(inflammation.markers)){ # iterating over rows
+    
+    if(inflammation.markers[,-1][j,i] < as.numeric(lod[i])){ # if sample is below lod; the first column is the ID
+      
+      count = count + 1
+      
+      if(count >= as.integer(0.8 * nrow(inflammation.markers))){ # if more than 80 % of samples below lod
+        excl.col = c(excl.col, i+1)
+        count = 0
+        break
+      }
+    }
+  }
+}
+
+# I will now only keep the columns which contain individuals with non-NA values and plot the distribution of each of these markers, but will not display them
+
+inflammation.markers <- inflammation.markers[-excl.col]
+
+#dim(inflammation.markers)
+#[1] 909  74
+
+# CRP i-PEGS ------
+
+lbc36.crp <- read_delim("data/LBCW1_qced_normalized_DNAm_crp_inflammation_scores.profile", delim = "\t") %>%
+  mutate(SCORE = SCORE * CNT) %>%
+  select(IID, SCORE) %>%
+  set_names("IID", "CRP_SCORE")
+  
+# Calculate disorder-specific CTP-score ---
+
+aus.to.lbc36.pred <- mps(coeffs.aus, lbc36.ctp)
+
+colnames(aus.to.lbc36.pred)[c(1,2)] <- c("AUS_CTP_SCORE", "CNT_AUS_CTP_SCORE")
+
+sgpd.to.lbc36.pred <- mps(coeffs.sgpd, lbc36.ctp)
+
+colnames(sgpd.to.lbc36.pred)[c(1,2)] <- c("SGPD_CTP_SCORE", "CNT_SGPD_CTP_SCORE")
+
+aibl.to.lbc36.pred <- mps(coeffs.aibl, lbc36.ctp)
+
+colnames(aibl.to.lbc36.pred)[c(1,2)] <- c("AIBL_CTP_SCORE", "CNT_AIL_CTP_SCORE")
+
+scz1.to.lbc36.pred <- mps(coeffs.scz1, lbc36.ctp)
+
+colnames(scz1.to.lbc36.pred)[c(1,2)] <- c("SCZ1_CTP_SCORE", "CNT_SCZ1_CTP_SCORE")
+
+ra.to.lbc36.pred <- mps(coeffs.ra, lbc36.ctp)
+
+colnames(ra.to.lbc36.pred)[c(1,2)] <- c("RA_CTP_SCORE", "CNT_RA_CTP_SCORE")
+
+# Calculate correlation between MPS and inflammatory markers 
+lbc36.pred <- inner_join(inflammation.markers, lbc36.crp) %>%
+  inner_join(lbc36.smok) %>%
+  inner_join(aus.to.lbc36.pred[,c(1,3)]) %>%
+  inner_join(sgpd.to.lbc36.pred[,c(1,3)]) %>%
+  inner_join(aibl.to.lbc36.pred[,c(1,3)]) %>%
+  inner_join(scz1.to.lbc36.pred[,c(1,3)]) %>%
+  inner_join(ra.to.lbc36.pred[,c(1,3)]) %>%
+  inner_join(lbc36.real.cc) %>%
+  inner_join(lbc36.mom.meta) %>%
+  inner_join(lbc36.moa.meta) %>%
+  inner_join(lbc36.age) %>%
+  inner_join(lbc36.sex) %>%
+  mutate(gender = as.factor(gender))
+  
+#dim(lbc36.pred)
+#[1] 823  88
+
+# Plot scatterplots of the CTP-scores ---
+lbc36.pred %>%
+  select(CRP_SCORE, AUS_CTP_SCORE, SGPD_CTP_SCORE, AIBL_CTP_SCORE, SCZ1_CTP_SCORE, RA_CTP_SCORE, gender) %>%
+ggpairs(aes(colour = gender, alpha = 0.4)) + 
+  ggtitle("Pairwise scatterplots of disorder-specific CTP-derived profile scores in LBC36") + theme(plot.title = element_text(size = 28), axis.text = element_text(size = 16))
+
+ggsave("results/figures/pairwise_scatterplots_CTP_MPS_for_all_disorders.png", width = 20, height = 15, units = "in", dpi = 400)
+```
+
+
+### Visualizing correlations with well-known inflammatory markers
+
+```{r corr_all, echo = T, warning=F, message=F}
+# Rank-based inverse transform of protein levels ----
+lbc36.pred.norm <- lbc36.pred %>% 
+  mutate_at(vars(-IID, -REAL_LYMPHO, -REAL_MONO, -REAL_GRAN, -AUS_CTP_SCORE, -SGPD_CTP_SCORE, -AIBL_CTP_SCORE, -SCZ1_CTP_SCORE, -RA_CTP_SCORE, -gender, -NDs_MOMENT_SCORE, -NDs_MOA_SCORE, -CRP_SCORE, -SMOKING_SCORE, -age_years), rankNorm)
+
+# Correlation between scores and real cell counts
+lbc36.pred.cor <- lbc36.pred.norm %>%
+  select(-IID, -gender) %>%
+  correlate() %>%
+  focus(AUS_CTP_SCORE, SGPD_CTP_SCORE, AIBL_CTP_SCORE, SCZ1_CTP_SCORE, RA_CTP_SCORE,
+        NDs_MOA_SCORE, NDs_MOMENT_SCORE, CRP_SCORE, REAL_GRAN, REAL_LYMPHO, REAL_MONO) %>%
+  as.data.frame(.) 
+
+rownames(lbc36.pred.cor) <- lbc36.pred.cor$rowname
+lbc36.pred.cor <- lbc36.pred.cor[,-1]
+lbc36.pred.cor <- as.matrix(t(lbc36.pred.cor))
+
+p.mat <- cor.mtest(lbc36.pred.norm %>%
+  select(-IID, -gender) %>%
+    as.matrix(.))[[1]] 
+
+colnames(p.mat) <- colnames(lbc36.pred.norm %>% select(-IID, -gender))
+rownames(p.mat) <- colnames(lbc36.pred.norm %>% select(-IID, -gender))
+
+p.mat <- p.mat[,which(colnames(p.mat) %in% rownames(lbc36.pred.cor))]
+p.mat <- p.mat[-which(rownames(p.mat) %in% colnames(p.mat)),]
+p.mat <- t(p.mat)
+
+p.mat <- p.mat[rownames(lbc36.pred.cor),]
+p.mat <- p.mat[,colnames(lbc36.pred.cor)]
+
+# keep correlations p-value with at least a value < 0.0001 for plotting
+p.mat2 <- as.matrix(as.data.frame(p.mat)[,purrr::map_lgl(as.data.frame(p.mat),~any(.x<0.0001))])
+lbc36.pred.cor2 <- lbc36.pred.cor[,colnames(p.mat2)]
+
+png("results/figures/correlation_MPS_CTP_scores_inflammation_markers_LBC36.png", width = 8, height = 4, units = "in", res = 400)
+corrplot(lbc36.pred.cor2,  tl.srt = 45, tl.col = "black", tl.cex = 0.5, cl.cex = 0.5,
+         method = "color", p.mat = p.mat2, sig.level = c(0.0001, 0.001, 0.05), 
+         insig = "label_sig", pch.cex = 0.3, pch.col = "black", )
+dev.off()
+
+rownames(p.mat) <- paste("p.", rownames(p.mat), sep ="")
+as.data.frame(t(rbind(lbc36.pred.cor, as.data.frame(p.mat)))) %>%
+  write.csv("results/correlation_MPS_CTP_scores_inflammation_markers_LBC36.csv", row.names = T)
+
+# Correlation between scores
+lbc36.pred.scores.cor <- lbc36.pred.norm %>%
+  select(-IID, -gender) %>%
+  correlate() %>%
+  select(rowname, AUS_CTP_SCORE, SGPD_CTP_SCORE, AIBL_CTP_SCORE, SCZ1_CTP_SCORE, RA_CTP_SCORE,
+        NDs_MOA_SCORE, NDs_MOMENT_SCORE, CRP_SCORE, REAL_GRAN, REAL_LYMPHO, REAL_MONO) %>%
+  as.data.frame(.) 
+
+rownames(lbc36.pred.scores.cor) <- lbc36.pred.scores.cor$rowname
+
+lbc36.pred.scores.cor <- lbc36.pred.scores.cor %>%
+  select(-rowname)
+
+lbc36.pred.scores.cor <- lbc36.pred.scores.cor[colnames(lbc36.pred.scores.cor),]
+
+lbc36.pred.scores.cor <- as.matrix(t(lbc36.pred.scores.cor))
+
+png("results/figures/correlation_MPS_CTP_CRP_scores_cell_counts_LBC36.png", width = 4, height = 4, units = "in", res = 400)
+corrplot(lbc36.pred.scores.cor,  tl.srt = 45, tl.col = "black", tl.cex = 0.5, cl.cex = 0.5,
+         method = "number", type = "upper", diag = F, 
+         insig = "label_sig",number.cex = 0.5 )
+dev.off()
+```
+
+* **Scatterplots of different scores vs inflammatory markers:**
+
+> TGF-alpha
+
+```{r plot_scatterplot_epig_scores_tgfa, echo = T, warning=F, message=F}
+# TGF-A VS CTP, CC, MOMENT, MOA & CRP SCORES ----
+r.ra <- round(lbc36.pred.cor["RA_CTP_SCORE",grep("TGF-alpha", colnames(lbc36.pred.cor))], 2)
+p1 <- ggplot(lbc36.pred.norm, aes(x = RA_CTP_SCORE))+ geom_point(aes(y = `TGF-alpha`), colour = "darkred")+
+  geom_smooth(aes(y = `TGF-alpha`), method = "lm", colour = "red")+
+  labs(subtitle = paste("r = ", r.ra, sep = "")) + 
+  xlab("RA CTP-score")+
+  ylab("TGF-alpha\n(rank-based inverse transform)") + 
+  theme_bw()
+p1 <- ggMarginal(p1, type = "histogram")
+
+r.aus <- round(lbc36.pred.cor["AUS_CTP_SCORE",grep("TGF-alpha", colnames(lbc36.pred.cor))], 2)
+p2 <- ggplot(lbc36.pred.norm, aes(x = AUS_CTP_SCORE))+ geom_point(aes(y = `TGF-alpha`), colour = "darkred")+
+  geom_smooth(aes(y = `TGF-alpha`), method = "lm", colour = "red")+
+  labs(subtitle = paste("r = ", r.aus, sep = "")) + 
+  xlab("AUS CTP-score")+
+  ylab("")+ 
+  theme_bw()
+p2 <- ggMarginal(p2, type = "histogram")
+
+r.scz1<- round(lbc36.pred.cor["SCZ1_CTP_SCORE",grep("TGF-alpha", colnames(lbc36.pred.cor))], 2)
+p3 <- ggplot(lbc36.pred.norm, aes(x = SCZ1_CTP_SCORE))+ geom_point(aes(y = `TGF-alpha`), colour = "darkred")+
+  geom_smooth(aes(y = `TGF-alpha`), method = "lm", colour = "red")+
+  labs(subtitle = paste("r = ", r.scz1, sep = "")) + 
+  xlab("SCZ1 CTP-score")+
+  ylab("")+ 
+  theme_bw()
+p3 <- ggMarginal(p3, type = "histogram")
+
+r.aibl <- round(lbc36.pred.cor["AIBL_CTP_SCORE",grep("TGF-alpha", colnames(lbc36.pred.cor))], 2)
+p4 <- ggplot(lbc36.pred.norm, aes(x = AIBL_CTP_SCORE))+ geom_point(aes(y = `TGF-alpha`), colour = "darkred")+
+  geom_smooth(aes(y = `TGF-alpha`), method = "lm", colour = "red")+
+  labs(subtitle = paste("r = ", r.aibl, sep = "")) + 
+  xlab("AIBL CTP-score")+
+  ylab("TGF-alpha\n(rank-based inverse transform)")+ 
+  theme_bw()
+p4 <- ggMarginal(p4, type = "histogram")
+
+r.sgpd <- round(lbc36.pred.cor["SGPD_CTP_SCORE",grep("TGF-alpha", colnames(lbc36.pred.cor))], 2)
+p5 <- ggplot(lbc36.pred.norm, aes(x = SGPD_CTP_SCORE))+ geom_point(aes(y = `TGF-alpha`), colour = "darkred")+
+  geom_smooth(aes(y = `TGF-alpha`), method = "lm", colour = "red")+
+  labs(subtitle = paste("r = ", r.sgpd, sep = "")) + 
+  xlab("SGPD CTP-score")+
+  ylab("")+ 
+  theme_bw()
+p5 <- ggMarginal(p5, type = "histogram")
+
+r.gran<- round(lbc36.pred.cor["REAL_GRAN",grep("TGF-alpha", colnames(lbc36.pred.cor))], 2)
+p6 <- ggplot(lbc36.pred.norm, aes(x = REAL_GRAN))+ geom_point(aes(y = `TGF-alpha`), colour = "darkorange")+
+  geom_smooth(aes(y = `TGF-alpha`), method = "lm", colour = "red")+
+  labs(subtitle = paste("r = ", r.gran, sep = "")) + 
+  xlab(expression(paste("Real granulocytes counts (",10^9/L ,")", sep ="" )))+
+  ylab("")+ 
+  theme_bw()
+p6 <- ggMarginal(p6, type = "histogram")
+
+r.lympho <- round(lbc36.pred.cor["REAL_LYMPHO",grep("TGF-alpha", colnames(lbc36.pred.cor))], 2)
+p7 <- ggplot(lbc36.pred.norm, aes(x = REAL_LYMPHO))+ geom_point(aes(y = `TGF-alpha`), colour = "darkorange")+
+  geom_smooth(aes(y = `TGF-alpha`), method = "lm", colour = "red")+
+  labs(subtitle = paste("r = ", r.lympho, sep = "")) + 
+  xlab(expression(paste("Real lymphocytes counts (",10^9/L ,")", sep ="" )))+
+  ylab("")+ 
+  theme_bw()
+p7 <- ggMarginal(p7, type = "histogram")
+
+r.mono <- round(lbc36.pred.cor["REAL_MONO",grep("TGF-alpha", colnames(lbc36.pred.cor))], 2)
+p8 <- ggplot(lbc36.pred.norm, aes(x = REAL_MONO))+ geom_point(aes(y = `TGF-alpha`), colour = "darkorange")+
+  geom_smooth(aes(y = `TGF-alpha`), method = "lm", colour = "red")+
+  labs(subtitle = paste("r = ", r.mono, sep = "")) + 
+  xlab(expression(paste("Real monoocytes counts (",10^9/L ,")", sep ="" )))+
+  ylab("")+ 
+  theme_bw()
+p8 <- ggMarginal(p8, type = "histogram")
+
+r.moa <- round(lbc36.pred.cor["NDs_MOA_SCORE",grep("TGF-alpha", colnames(lbc36.pred.cor))], 2)
+p9 <- ggplot(lbc36.pred.norm, aes(x = NDs_MOA_SCORE))+ geom_point(aes(y = `TGF-alpha`), colour = "darkgreen")+
+  geom_smooth(aes(y = `TGF-alpha`), method = "lm", colour = "red")+
+  labs(subtitle = paste("r = ", r.moa, sep = "")) + 
+  xlab("MOA-MPS NDs")+
+  ylab("")+ 
+  theme_bw()
+p9 <- ggMarginal(p9, type = "histogram")
+
+r.mom <- round(lbc36.pred.cor["NDs_MOMENT_SCORE",grep("TGF-alpha", colnames(lbc36.pred.cor))], 2)
+p10 <- ggplot(lbc36.pred.norm, aes(x = NDs_MOMENT_SCORE))+ geom_point(aes(y = `TGF-alpha`), colour = "darkblue")+
+  geom_smooth(aes(y = `TGF-alpha`), method = "lm", colour = "red")+
+  labs(subtitle = paste("r = ", r.mom, sep = "")) + 
+  xlab("MOMENT-MPS NDs")+
+  ylab("")+ 
+  theme_bw()
+p10 <- ggMarginal(p10, type = "histogram")
+
+r.crp <- round(cor(lbc36.pred.norm$CRP_SCORE, lbc36.pred.norm$`TGF-alpha`), 2)
+p11 <- ggplot(lbc36.pred.norm, aes(x = CRP_SCORE))+ geom_point(aes(y = `TGF-alpha`), colour = "darkgray")+
+  geom_smooth(aes(y = `TGF-alpha`), method = "lm", colour = "red")+
+  labs(subtitle = paste("r = ", r.crp, sep = "")) + 
+  xlab("CRP-score")+
+  ylab("TGF-alpha\n(rank-based inverse transform)") +
+  theme_bw()
+p11 <- ggMarginal(p11, type = "histogram")
+
+fake.dat <- data.frame("V1" = seq(1,5), "V2"= seq(6,10))
+
+p12 <- ggplot(fake.dat, aes(x = V1, y = V2, colour = as.factor(V1))) + 
+  geom_point() + 
+  labs(colour = "") + 
+  scale_colour_manual(values = c("darkred", "darkorange", "darkgray", "darkgreen", "darkblue"), labels = c("Disease-associated \nCTP-score", "Real cell counts",  "CRP-score","MOA MPS","MOMENT MPS")) +
+  theme(legend.key = element_rect(fill = NA), legend.text =  element_text(size = 12))
+
+p12 <- get_legend(p12)
+  
+plot_grid(p4, p5, p3, p2, p1, p6, p7, p8, p11, p9, p10, p12, ncol = 4)
+tgf.alpha <- plot_grid(p4, p5, p3, p2, p1, p6, p7, p8, p11, p9, p10, p12, ncol = 4)
+
+ggsave("results/figures/TGF-alpha_vs_ctp_moment_moa_scores_realCC.png", width = 10, height = 7.8)
+```
+
+> EN-RAGE
+
+```{r plot_scatterplot_epig_scores_enrage, echo = T, warning=F, message=F}
+# EN-RAGE VS CTP, CC, MOMENT, MOA & CRP SCORES ----
+r.ra <- round(lbc36.pred.cor["RA_CTP_SCORE",grep("EN-RAGE", colnames(lbc36.pred.cor))], 2)
+p1 <- ggplot(lbc36.pred.norm, aes(x = RA_CTP_SCORE))+ geom_point(aes(y = `EN-RAGE`), colour = "darkred")+
+  geom_smooth(aes(y = `EN-RAGE`), method = "lm", colour = "red")+
+  labs(subtitle = paste("r = ", r.ra, sep = "")) + 
+  xlab("RA CTP-score")+
+  ylab("EN-RANGE\n(rank-based inverse transform)") + 
+  theme_bw()
+p1 <- ggMarginal(p1, type = "histogram")
+
+r.aus <- round(lbc36.pred.cor["AUS_CTP_SCORE",grep("EN-RAGE", colnames(lbc36.pred.cor))], 2)
+p2 <- ggplot(lbc36.pred.norm, aes(x = AUS_CTP_SCORE))+ geom_point(aes(y = `EN-RAGE`), colour = "darkred")+
+  geom_smooth(aes(y = `EN-RAGE`), method = "lm", colour = "red")+
+  labs(subtitle = paste("r = ", r.aus, sep = "")) + 
+  xlab("AUS CTP-score")+
+  ylab("")+ 
+  theme_bw()
+p2 <- ggMarginal(p2, type = "histogram")
+
+r.scz1<- round(lbc36.pred.cor["SCZ1_CTP_SCORE",grep("EN-RAGE", colnames(lbc36.pred.cor))], 2)
+p3 <- ggplot(lbc36.pred.norm, aes(x = SCZ1_CTP_SCORE))+ geom_point(aes(y = `EN-RAGE`), colour = "darkred")+
+  geom_smooth(aes(y = `EN-RAGE`), method = "lm", colour = "red")+
+  labs(subtitle = paste("r = ", r.scz1, sep = "")) + 
+  xlab("SCZ1 CTP-score")+
+  ylab("")+ 
+  theme_bw()
+p3 <- ggMarginal(p3, type = "histogram")
+
+r.aibl <- round(lbc36.pred.cor["AIBL_CTP_SCORE",grep("EN-RAGE", colnames(lbc36.pred.cor))], 2)
+p4 <- ggplot(lbc36.pred.norm, aes(x = AIBL_CTP_SCORE))+ geom_point(aes(y = `EN-RAGE`), colour = "darkred")+
+  geom_smooth(aes(y = `EN-RAGE`), method = "lm", colour = "red")+
+  labs(subtitle = paste("r = ", r.aibl, sep = "")) + 
+  xlab("AIBL CTP-score")+
+  ylab("EN-RANGE\n(rank-based inverse transform)")+ 
+  theme_bw()
+p4 <- ggMarginal(p4, type = "histogram")
+
+r.sgpd <- round(lbc36.pred.cor["SGPD_CTP_SCORE",grep("EN-RAGE", colnames(lbc36.pred.cor))], 2)
+p5 <- ggplot(lbc36.pred.norm, aes(x = SGPD_CTP_SCORE))+ geom_point(aes(y = `EN-RAGE`), colour = "darkred")+
+  geom_smooth(aes(y = `EN-RAGE`), method = "lm", colour = "red")+
+  labs(subtitle = paste("r = ", r.sgpd, sep = "")) + 
+  xlab("SGPD CTP-score")+
+  ylab("")+ 
+  theme_bw()
+p5 <- ggMarginal(p5, type = "histogram")
+
+r.gran<- round(lbc36.pred.cor["REAL_GRAN",grep("EN-RAGE", colnames(lbc36.pred.cor))], 2)
+p6 <- ggplot(lbc36.pred.norm, aes(x = REAL_GRAN))+ geom_point(aes(y = `EN-RAGE`), colour = "darkorange")+
+  geom_smooth(aes(y = `EN-RAGE`), method = "lm", colour = "red")+
+  labs(subtitle = paste("r = ", r.gran, sep = "")) + 
+  xlab(expression(paste("Real granulocytes counts (",10^9/L ,")", sep ="" )))+
+  ylab("")+ 
+  theme_bw()
+p6 <- ggMarginal(p6, type = "histogram")
+
+r.lympho <- round(lbc36.pred.cor["REAL_LYMPHO",grep("EN-RAGE", colnames(lbc36.pred.cor))], 2)
+p7 <- ggplot(lbc36.pred.norm, aes(x = REAL_LYMPHO))+ geom_point(aes(y = `EN-RAGE`), colour = "darkorange")+
+  geom_smooth(aes(y = `EN-RAGE`), method = "lm", colour = "red")+
+  labs(subtitle = paste("r = ", r.lympho, sep = "")) + 
+  xlab(expression(paste("Real lymphocytes counts (",10^9/L ,")", sep ="" )))+
+  ylab("")+ 
+  theme_bw()
+p7 <- ggMarginal(p7, type = "histogram")
+
+r.mono <- round(lbc36.pred.cor["REAL_MONO",grep("EN-RAGE", colnames(lbc36.pred.cor))], 2)
+p8 <- ggplot(lbc36.pred.norm, aes(x = REAL_MONO))+ geom_point(aes(y = `EN-RAGE`), colour = "darkorange")+
+  geom_smooth(aes(y = `EN-RAGE`), method = "lm", colour = "red")+
+  labs(subtitle = paste("r = ", r.mono, sep = "")) + 
+  xlab(expression(paste("Real monoocytes counts (",10^9/L ,")", sep ="" )))+
+  ylab("")+ 
+  theme_bw()
+p8 <- ggMarginal(p8, type = "histogram")
+
+r.moa <- round(lbc36.pred.cor["NDs_MOA_SCORE",grep("EN-RAGE", colnames(lbc36.pred.cor))], 2)
+p9 <- ggplot(lbc36.pred.norm, aes(x = NDs_MOA_SCORE))+ geom_point(aes(y = `EN-RAGE`), colour = "darkgreen")+
+  geom_smooth(aes(y = `EN-RAGE`), method = "lm", colour = "red")+
+  labs(subtitle = paste("r = ", r.moa, sep = "")) + 
+  xlab("MOA-MPS NDs")+
+  ylab("")+ 
+  theme_bw()
+p9 <- ggMarginal(p9, type = "histogram")
+
+r.mom <- round(lbc36.pred.cor["NDs_MOMENT_SCORE",grep("EN-RAGE", colnames(lbc36.pred.cor))], 2)
+p10 <- ggplot(lbc36.pred.norm, aes(x = NDs_MOMENT_SCORE))+ geom_point(aes(y = `EN-RAGE`), colour = "darkblue")+
+  geom_smooth(aes(y = `EN-RAGE`), method = "lm", colour = "red")+
+  labs(subtitle = paste("r = ", r.mom, sep = "")) + 
+  xlab("MOMENT-MPS NDs")+
+  ylab("")+ 
+  theme_bw()
+p10 <- ggMarginal(p10, type = "histogram")
+
+r.crp <- round(cor(lbc36.pred.norm$CRP_SCORE, lbc36.pred.norm$`EN-RAGE`), 2)
+p11 <- ggplot(lbc36.pred.norm, aes(x = CRP_SCORE))+ geom_point(aes(y = `EN-RAGE`), colour = "darkgray")+
+  geom_smooth(aes(y = `EN-RAGE`), method = "lm", colour = "red")+
+  labs(subtitle = paste("r = ", r.crp, sep = "")) + 
+  xlab("CRP-score")+
+  ylab("EN-RANGE\n(rank-based inverse transform)") +
+  theme_bw()
+p11 <- ggMarginal(p11, type = "histogram")
+
+fake.dat <- data.frame("V1" = seq(1,5), "V2"= seq(6,10))
+
+p12 <- ggplot(fake.dat, aes(x = V1, y = V2, colour = as.factor(V1))) + 
+  geom_point() + 
+  labs(colour = "") + 
+  scale_colour_manual(values = c("darkred", "darkorange", "darkgray", "darkgreen", "darkblue"), labels = c("Disease-associated \nCTP-score", "Real cell counts",  "CRP-score","MOA MPS","MOMENT MPS")) +
+  theme(legend.key = element_rect(fill = NA), legend.text =  element_text(size = 12))
+
+p12 <- get_legend(p12)
+  
+plot_grid(p4, p5, p3, p2, p1, p6, p7, p8, p11, p9, p10, p12, ncol = 4)
+
+ggsave("results/figures/EN-RAGE_vs_ctp_moment_moa_scores_realCC.png", width = 10, height = 7.8)
+```
+
+> OSM
+
+```{r plot_scatterplot_epig_scores_osm, echo = T, warning=F, message=F}
+# OSM VS CTP, CC, MOMENT, MOA & CRP SCORES ----
+r.ra <- round(lbc36.pred.cor["RA_CTP_SCORE",grep("OSM", colnames(lbc36.pred.cor))], 2)
+p1 <- ggplot(lbc36.pred.norm, aes(x = RA_CTP_SCORE))+ geom_point(aes(y = `OSM`), colour = "darkred")+
+  geom_smooth(aes(y = `OSM`), method = "lm", colour = "red")+
+  labs(subtitle = paste("r = ", r.ra, sep = "")) + 
+  xlab("RA CTP-score")+
+  ylab("OSM\n(rank-based inverse transform)") + 
+  theme_bw()
+p1 <- ggMarginal(p1, type = "histogram")
+
+r.aus <- round(lbc36.pred.cor["AUS_CTP_SCORE",grep("OSM", colnames(lbc36.pred.cor))], 2)
+p2 <- ggplot(lbc36.pred.norm, aes(x = AUS_CTP_SCORE))+ geom_point(aes(y = `OSM`), colour = "darkred")+
+  geom_smooth(aes(y = `OSM`), method = "lm", colour = "red")+
+  labs(subtitle = paste("r = ", r.aus, sep = "")) + 
+  xlab("AUS CTP-score")+
+  ylab("")+ 
+  theme_bw()
+p2 <- ggMarginal(p2, type = "histogram")
+
+r.scz1<- round(lbc36.pred.cor["SCZ1_CTP_SCORE",grep("OSM", colnames(lbc36.pred.cor))], 2)
+p3 <- ggplot(lbc36.pred.norm, aes(x = SCZ1_CTP_SCORE))+ geom_point(aes(y = `OSM`), colour = "darkred")+
+  geom_smooth(aes(y = `OSM`), method = "lm", colour = "red")+
+  labs(subtitle = paste("r = ", r.scz1, sep = "")) + 
+  xlab("SCZ1 CTP-score")+
+  ylab("")+ 
+  theme_bw()
+p3 <- ggMarginal(p3, type = "histogram")
+
+r.aibl <- round(lbc36.pred.cor["AIBL_CTP_SCORE",grep("OSM", colnames(lbc36.pred.cor))], 2)
+p4 <- ggplot(lbc36.pred.norm, aes(x = AIBL_CTP_SCORE))+ geom_point(aes(y = `OSM`), colour = "darkred")+
+  geom_smooth(aes(y = `OSM`), method = "lm", colour = "red")+
+  labs(subtitle = paste("r = ", r.aibl, sep = "")) + 
+  xlab("AIBL CTP-score")+
+  ylab("OSM\n(rank-based inverse transform)")+ 
+  theme_bw()
+p4 <- ggMarginal(p4, type = "histogram")
+
+r.sgpd <- round(lbc36.pred.cor["SGPD_CTP_SCORE",grep("OSM", colnames(lbc36.pred.cor))], 2)
+p5 <- ggplot(lbc36.pred.norm, aes(x = SGPD_CTP_SCORE))+ geom_point(aes(y = `OSM`), colour = "darkred")+
+  geom_smooth(aes(y = `OSM`), method = "lm", colour = "red")+
+  labs(subtitle = paste("r = ", r.sgpd, sep = "")) + 
+  xlab("SGPD CTP-score")+
+  ylab("")+ 
+  theme_bw()
+p5 <- ggMarginal(p5, type = "histogram")
+
+r.gran<- round(lbc36.pred.cor["REAL_GRAN",grep("OSM", colnames(lbc36.pred.cor))], 2)
+p6 <- ggplot(lbc36.pred.norm, aes(x = REAL_GRAN))+ geom_point(aes(y = `OSM`), colour = "darkorange")+
+  geom_smooth(aes(y = `OSM`), method = "lm", colour = "red")+
+  labs(subtitle = paste("r = ", r.gran, sep = "")) + 
+  xlab(expression(paste("Real granulocytes counts (",10^9/L ,")", sep ="" )))+
+  ylab("")+ 
+  theme_bw()
+p6 <- ggMarginal(p6, type = "histogram")
+
+r.lympho <- round(lbc36.pred.cor["REAL_LYMPHO",grep("OSM", colnames(lbc36.pred.cor))], 2)
+p7 <- ggplot(lbc36.pred.norm, aes(x = REAL_LYMPHO))+ geom_point(aes(y = `OSM`), colour = "darkorange")+
+  geom_smooth(aes(y = `OSM`), method = "lm", colour = "red")+
+  labs(subtitle = paste("r = ", r.lympho, sep = "")) + 
+  xlab(expression(paste("Real lymphocytes counts (",10^9/L ,")", sep ="" )))+
+  ylab("")+ 
+  theme_bw()
+p7 <- ggMarginal(p7, type = "histogram")
+
+r.mono <- round(lbc36.pred.cor["REAL_MONO",grep("OSM", colnames(lbc36.pred.cor))], 2)
+p8 <- ggplot(lbc36.pred.norm, aes(x = REAL_MONO))+ geom_point(aes(y = `OSM`), colour = "darkorange")+
+  geom_smooth(aes(y = `OSM`), method = "lm", colour = "red")+
+  labs(subtitle = paste("r = ", r.mono, sep = "")) + 
+  xlab(expression(paste("Real monoocytes counts (",10^9/L ,")", sep ="" )))+
+  ylab("")+ 
+  theme_bw()
+p8 <- ggMarginal(p8, type = "histogram")
+
+r.moa <- round(lbc36.pred.cor["NDs_MOA_SCORE",grep("OSM", colnames(lbc36.pred.cor))], 2)
+p9 <- ggplot(lbc36.pred.norm, aes(x = NDs_MOA_SCORE))+ geom_point(aes(y = `OSM`), colour = "darkgreen")+
+  geom_smooth(aes(y = `OSM`), method = "lm", colour = "red")+
+  labs(subtitle = paste("r = ", r.moa, sep = "")) + 
+  xlab("MOA-MPS NDs")+
+  ylab("")+ 
+  theme_bw()
+p9 <- ggMarginal(p9, type = "histogram")
+
+r.mom <- round(lbc36.pred.cor["NDs_MOMENT_SCORE",grep("OSM", colnames(lbc36.pred.cor))], 2)
+p10 <- ggplot(lbc36.pred.norm, aes(x = NDs_MOMENT_SCORE))+ geom_point(aes(y = `OSM`), colour = "darkblue")+
+  geom_smooth(aes(y = `OSM`), method = "lm", colour = "red")+
+  labs(subtitle = paste("r = ", r.mom, sep = "")) + 
+  xlab("MOMENT-MPS NDs")+
+  ylab("")+ 
+  theme_bw()
+p10 <- ggMarginal(p10, type = "histogram")
+
+r.crp <- round(cor(lbc36.pred.norm$CRP_SCORE, lbc36.pred.norm$`OSM`), 2)
+p11 <- ggplot(lbc36.pred.norm, aes(x = CRP_SCORE))+ geom_point(aes(y = `OSM`), colour = "darkgray")+
+  geom_smooth(aes(y = `OSM`), method = "lm", colour = "red")+
+  labs(subtitle = paste("r = ", r.crp, sep = "")) + 
+  xlab("CRP-score")+
+  ylab("OSM\n(rank-based inverse transform)") +
+  theme_bw()
+p11 <- ggMarginal(p11, type = "histogram")
+
+fake.dat <- data.frame("V1" = seq(1,5), "V2"= seq(6,10))
+
+p12 <- ggplot(fake.dat, aes(x = V1, y = V2, colour = as.factor(V1))) + 
+  geom_point() + 
+  labs(colour = "") + 
+  scale_colour_manual(values = c("darkred", "darkorange", "darkgray", "darkgreen", "darkblue"), labels = c("Disease-associated \nCTP-score", "Real cell counts",  "CRP-score","MOA MPS","MOMENT MPS")) +
+  theme(legend.key = element_rect(fill = NA), legend.text =  element_text(size = 12))
+
+p12 <- get_legend(p12)
+  
+plot_grid(p4, p5, p3, p2, p1, p6, p7, p8, p11, p9, p10, p12, ncol = 4)
+
+ggsave("results/figures/OSM_vs_ctp_moment_moa_scores_realCC.png", width = 10, height = 7.8)
+```
+
+> TNF-beta
+
+```{r plot_scatterplot_epig_scores_tnfb, echo = T, warning=F, message=F}
+# TNF-beta VS CTP, CC, MOMENT, MOA & CRP SCORES ----
+r.ra <- round(lbc36.pred.cor["RA_CTP_SCORE",grep("TNFB", colnames(lbc36.pred.cor))], 2)
+p1 <- ggplot(lbc36.pred.norm, aes(x = RA_CTP_SCORE))+ geom_point(aes(y = `TNFB`), colour = "darkred")+
+  geom_smooth(aes(y = `TNFB`), method = "lm", colour = "red")+
+  labs(subtitle = paste("r = ", r.ra, sep = "")) + 
+  xlab("RA CTP-score")+
+  ylab("TNF-beta\n(rank-based inverse transform)") + 
+  theme_bw()
+p1 <- ggMarginal(p1, type = "histogram")
+
+r.aus <- round(lbc36.pred.cor["AUS_CTP_SCORE",grep("TNFB", colnames(lbc36.pred.cor))], 2)
+p2 <- ggplot(lbc36.pred.norm, aes(x = AUS_CTP_SCORE))+ geom_point(aes(y = `TNFB`), colour = "darkred")+
+  geom_smooth(aes(y = `TNFB`), method = "lm", colour = "red")+
+  labs(subtitle = paste("r = ", r.aus, sep = "")) + 
+  xlab("AUS CTP-score")+
+  ylab("")+ 
+  theme_bw()
+p2 <- ggMarginal(p2, type = "histogram")
+
+r.scz1<- round(lbc36.pred.cor["SCZ1_CTP_SCORE",grep("TNFB", colnames(lbc36.pred.cor))], 2)
+p3 <- ggplot(lbc36.pred.norm, aes(x = SCZ1_CTP_SCORE))+ geom_point(aes(y = `TNFB`), colour = "darkred")+
+  geom_smooth(aes(y = `TNFB`), method = "lm", colour = "red")+
+  labs(subtitle = paste("r = ", r.scz1, sep = "")) + 
+  xlab("SCZ1 CTP-score")+
+  ylab("")+ 
+  theme_bw()
+p3 <- ggMarginal(p3, type = "histogram")
+
+r.aibl <- round(lbc36.pred.cor["AIBL_CTP_SCORE",grep("TNFB", colnames(lbc36.pred.cor))], 2)
+p4 <- ggplot(lbc36.pred.norm, aes(x = AIBL_CTP_SCORE))+ geom_point(aes(y = `TNFB`), colour = "darkred")+
+  geom_smooth(aes(y = `TNFB`), method = "lm", colour = "red")+
+  labs(subtitle = paste("r = ", r.aibl, sep = "")) + 
+  xlab("AIBL CTP-score")+
+  ylab("TNF-beta\n(rank-based inverse transform)")+ 
+  theme_bw()
+p4 <- ggMarginal(p4, type = "histogram")
+
+r.sgpd <- round(lbc36.pred.cor["SGPD_CTP_SCORE",grep("TNFB", colnames(lbc36.pred.cor))], 2)
+p5 <- ggplot(lbc36.pred.norm, aes(x = SGPD_CTP_SCORE))+ geom_point(aes(y = `TNFB`), colour = "darkred")+
+  geom_smooth(aes(y = `TNFB`), method = "lm", colour = "red")+
+  labs(subtitle = paste("r = ", r.sgpd, sep = "")) + 
+  xlab("SGPD CTP-score")+
+  ylab("")+ 
+  theme_bw()
+p5 <- ggMarginal(p5, type = "histogram")
+
+r.gran<- round(lbc36.pred.cor["REAL_GRAN",grep("TNFB", colnames(lbc36.pred.cor))], 2)
+p6 <- ggplot(lbc36.pred.norm, aes(x = REAL_GRAN))+ geom_point(aes(y = `TNFB`), colour = "darkorange")+
+  geom_smooth(aes(y = `TNFB`), method = "lm", colour = "red")+
+  labs(subtitle = paste("r = ", r.gran, sep = "")) + 
+  xlab(expression(paste("Real granulocytes counts (",10^9/L ,")", sep ="" )))+
+  ylab("")+ 
+  theme_bw()
+p6 <- ggMarginal(p6, type = "histogram")
+
+r.lympho <- round(lbc36.pred.cor["REAL_LYMPHO",grep("TNFB", colnames(lbc36.pred.cor))], 2)
+p7 <- ggplot(lbc36.pred.norm, aes(x = REAL_LYMPHO))+ geom_point(aes(y = `TNFB`), colour = "darkorange")+
+  geom_smooth(aes(y = `TNFB`), method = "lm", colour = "red")+
+  labs(subtitle = paste("r = ", r.lympho, sep = "")) + 
+  xlab(expression(paste("Real lymphocytes counts (",10^9/L ,")", sep ="" )))+
+  ylab("")+ 
+  theme_bw()
+p7 <- ggMarginal(p7, type = "histogram")
+
+r.mono <- round(lbc36.pred.cor["REAL_MONO",grep("TNFB", colnames(lbc36.pred.cor))], 2)
+p8 <- ggplot(lbc36.pred.norm, aes(x = REAL_MONO))+ geom_point(aes(y = `TNFB`), colour = "darkorange")+
+  geom_smooth(aes(y = `TNFB`), method = "lm", colour = "red")+
+  labs(subtitle = paste("r = ", r.mono, sep = "")) + 
+  xlab(expression(paste("Real monoocytes counts (",10^9/L ,")", sep ="" )))+
+  ylab("")+ 
+  theme_bw()
+p8 <- ggMarginal(p8, type = "histogram")
+
+r.moa <- round(lbc36.pred.cor["NDs_MOA_SCORE",grep("TNFB", colnames(lbc36.pred.cor))], 2)
+p9 <- ggplot(lbc36.pred.norm, aes(x = NDs_MOA_SCORE))+ geom_point(aes(y = `TNFB`), colour = "darkgreen")+
+  geom_smooth(aes(y = `TNFB`), method = "lm", colour = "red")+
+  labs(subtitle = paste("r = ", r.moa, sep = "")) + 
+  xlab("MOA-MPS NDs")+
+  ylab("")+ 
+  theme_bw()
+p9 <- ggMarginal(p9, type = "histogram")
+
+r.mom <- round(lbc36.pred.cor["NDs_MOMENT_SCORE",grep("TNFB", colnames(lbc36.pred.cor))], 2)
+p10 <- ggplot(lbc36.pred.norm, aes(x = NDs_MOMENT_SCORE))+ geom_point(aes(y = `TNFB`), colour = "darkblue")+
+  geom_smooth(aes(y = `TNFB`), method = "lm", colour = "red")+
+  labs(subtitle = paste("r = ", r.mom, sep = "")) + 
+  xlab("MOMENT-MPS NDs")+
+  ylab("")+ 
+  theme_bw()
+p10 <- ggMarginal(p10, type = "histogram")
+
+r.crp <- round(cor(lbc36.pred.norm$CRP_SCORE, lbc36.pred.norm$`TNFB`), 2)
+p11 <- ggplot(lbc36.pred.norm, aes(x = CRP_SCORE))+ geom_point(aes(y = `TNFB`), colour = "darkgray")+
+  geom_smooth(aes(y = `TNFB`), method = "lm", colour = "red")+
+  labs(subtitle = paste("r = ", r.crp, sep = "")) + 
+  xlab("CRP-score")+
+  ylab("TNF-beta\n(rank-based inverse transform)") +
+  theme_bw()
+p11 <- ggMarginal(p11, type = "histogram")
+
+fake.dat <- data.frame("V1" = seq(1,5), "V2"= seq(6,10))
+
+p12 <- ggplot(fake.dat, aes(x = V1, y = V2, colour = as.factor(V1))) + 
+  geom_point() + 
+  labs(colour = "") + 
+  scale_colour_manual(values = c("darkred", "darkorange", "darkgray", "darkgreen", "darkblue"), labels = c("Disease-associated \nCTP-score", "Real cell counts",  "CRP-score","MOA MPS","MOMENT MPS")) +
+  theme(legend.key = element_rect(fill = NA), legend.text =  element_text(size = 12))
+
+p12 <- get_legend(p12)
+  
+plot_grid(p4, p5, p3, p2, p1, p6, p7, p8, p11, p9, p10, p12, ncol = 4)
+
+ggsave("results/figures/TNFB_vs_ctp_moment_moa_scores_realCC.png", width = 10, height = 7.8)
+```
+
+* **Scatterplots of correlations of MOA, MOMENT and CRP-scores vs inflammatory markers:**
+```{r corr_moa_mom_crp, echo =T}
+fac_order <-
+  as_tibble(lbc36.pred.cor2) %>%
+  mutate(marker = rownames(lbc36.pred.cor2)) %>%
+  filter(marker %in% c("NDs_MOA_SCORE", "NDs_MOMENT_SCORE", "CRP_SCORE")) %>%
+  select(-SMOKING_SCORE, -age_years, -marker) %>%
+  t(.) %>%
+  as_tibble(.) %>%
+  rename(NDs_MOA_SCORE = V1,
+         NDs_MOMENT_SCORE = V2,
+         CRP_SCORE = V3) %>%
+  mutate(marker = rownames(t(lbc36.pred.cor2[,1:(ncol(lbc36.pred.cor2)-2)]))) %>%
+  arrange(CRP_SCORE) %>%
+  pull(marker)
+
+
+as_tibble(lbc36.pred.cor2) %>%
+  mutate(marker = rownames(lbc36.pred.cor2)) %>%
+  filter(marker %in% c("NDs_MOA_SCORE", "NDs_MOMENT_SCORE", "CRP_SCORE")) %>%
+  select(-SMOKING_SCORE, -age_years, -marker) %>%
+  t(.) %>%
+  as_tibble(.) %>%
+  rename(NDs_MOA_SCORE = V1,
+         NDs_MOMENT_SCORE = V2,
+         CRP_SCORE = V3) %>%
+  mutate(marker = rownames(t(lbc36.pred.cor2[,1:(ncol(lbc36.pred.cor2)-2)])),
+         marker =  factor(marker, levels = fac_order)) %>%
+  gather("SCORE", "cor", -marker) %>%
+  ggplot(aes(x = marker, y = cor, fill = SCORE)) + 
+
+  geom_bar(stat = "identity", position = position_dodge(0.6)) +
+  scale_fill_colorblind(label = c("CRP-MPS", "MOA-MPS", "MOMENT-MPS")) + 
+  coord_flip() +
+  ylab("Correlation with MPS") + 
+  xlab("Inflammation marker") + 
+  theme_bw() + 
+  theme(axis.text = element_text(size = 14),
+        legend.text = element_text(size = 18),
+        axis.title = element_text(size = 24),
+        legend.title = element_blank(),
+        legend.position = "bottom")
+
+
+ggsave("results/figures/correlation_MOA_MOMENT_CRP_inflammation_markers_LBC36.png", width = 10, height = 10)
+```
+
+# Calculate correlation between CTP and real CC in LBC1936
+```{r plot_corr_ctp_cc_lbc, warning=F, message=F}
+cor.ctp.cc <- lbc36.pred.norm %>%
+  select(IID, REAL_GRAN, REAL_LYMPHO, REAL_MONO) %>%
+  left_join(lbc36.ctp) %>%
+  mutate(Lympho = B + NK + CD4T + CD8T) %>%
+  select(-Neutro, -Eosino, -B, -NK, -CD4T, -CD8T, -IID) %>%
+  rename(MONO_PROP = Mono, GRAN_PROP = Gran, LYMPHO_PROP = Lympho)
+
+png("results/figures/correlation_CTP_cell_counts_LBC36.png", width = 5, height = 5, units = "in", res = 400)
+corrplot(cor(as.data.frame(cor.ctp.cc)), 
+         type = "upper", method = "number", diag = F, tl.srt = 45,
+         tl.col = "black")
+dev.off()
+```
+
+
+# Datasets description
+```{r plot_descriptive_stats, warning= F, message=F}
+age <- all.disorders %>% 
+  group_by(cohort, case.control) %>%
+  filter(case.control != "MCI" & case.control != "MCI-MCI" & case.control != "MCI-AD") %>%
+  summarise(mean.age = mean(pred.age)) 
+  
+age.plot <- all.disorders %>%
+  filter(case.control != "MCI" & case.control != "MCI-MCI" & case.control != "MCI-AD") %>%
+  ggplot(aes(x = pred.age, fill = case.control)) + 
+  geom_density(alpha = 0.5) + 
+  geom_vline(data = age, aes(xintercept = mean.age, colour = case.control), linetype="dashed", size=1) + 
+  facet_wrap(~cohort, ncol = 5, scales = "free") + 
+  scale_fill_colorblind() + 
+  scale_colour_colorblind() + 
+  theme_bw() + 
+  ylab("Density") + 
+  xlab("Predicted age") + 
+  theme(legend.title = element_blank())
+
+legend.desc.stats <- get_legend(age.plot)
+
+age.plot <- age.plot + theme(legend.position = "none")
+
+smok <-  all.disorders %>%
+  group_by(cohort,case.control) %>%
+  filter(case.control != "MCI" & case.control != "MCI-MCI" & case.control != "MCI-AD") %>%
+  summarise(mean.smok = mean(smoking.score))
+
+smok.plot <- all.disorders %>%
+  filter(case.control != "MCI" & case.control != "MCI-MCI" & case.control != "MCI-AD") %>%
+  ggplot(aes(x = smoking.score, fill = case.control)) + 
+  geom_density(alpha = 0.5) + 
+  geom_vline(data = smok, aes(xintercept = mean.smok, colour = case.control), linetype="dashed", size=1) + 
+  facet_wrap(~cohort, ncol = 5, scales = "free") + 
+  scale_fill_colorblind() + 
+  scale_colour_colorblind() + 
+  theme_bw() + 
+  ylab("Density") + 
+  xlab("Predicted smoking scores") + 
+  theme(legend.position = "none")
+
+sex.plot <- all.disorders %>%
+  filter(case.control != "MCI" & case.control != "MCI-MCI" & case.control != "MCI-AD") %>%
+  ggplot(aes(x = Sex, fill = case.control)) +
+  geom_bar(stat="count", width=0.7, alpha = 0.7) +
+  facet_wrap(~cohort, ncol = 5, scales = "free") + 
+  theme_bw() +
+  scale_fill_colorblind() + 
+  ylab("Count")+
+  xlab("Sex") + 
+  theme(legend.position = "none")
+
+plot_grid(age.plot, smok.plot, sex.plot, legend.desc.stats, nrow = 2, labels = c("A", "B", "C", ""))
+ggsave("results/figures/descriptive_statistics.png", width = 13, height = 8, dpi = 500) 
+
+
+# Mann whitney
+# Age
+mann.test.age <- all.disorders %>%
+filter(case.control != "MCI" & case.control != "MCI-MCI" & case.control != "MCI-AD") %>%  group_by(cohort) %>%
+  group_map(~ broom::tidy(wilcox.test(.x$pred.age ~ .x$case.control))) # Be aware of order
+
+# Smoking
+mann.test.smok <- all.disorders %>%
+  filter(case.control != "MCI" & case.control != "MCI-MCI" & case.control != "MCI-AD") %>%  
+  group_by(cohort) %>%
+  group_map(~ broom::tidy(wilcox.test(.x$smoking.score ~ .x$case.control))) # Be aware of order
+
+# Sex
+chisq.test.sex <- all.disorders %>%
+  filter(case.control != "MCI" & case.control != "MCI-MCI" & case.control != "MCI-AD") %>% 
+  group_by(cohort) %>%
+  group_map(~ broom::tidy(chisq.test(table(.x$Sex, droplevels(.x$case.control))))) # Be aware of order
+```
+
+```{r descriptive_stats_variables, echo =T, message=F, warning=F}
+data.desc <-  all.disorders %>% 
+  filter(case.control != "MCI" & case.control != "MCI-MCI" & case.control != "MCI-AD") 
+  
+table1(~  pred.age + smoking.score + Sex   | cohort + case.control, data=data.desc)
+```
+
+
