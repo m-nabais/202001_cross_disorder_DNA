@@ -2,7 +2,7 @@
 
 2. Some of the phenotype data cannot be publicly available, so I have provided code used for parsing of those files and uploaded a coded version of the phenotype files. 
 
-"OSCA_smok_probes_MOM.txt" - contains CpGs that were identified by MOMENT has significantly associated with smoking status. We remove these probes in the within-trait prediction of SCZ.
+
 
 "all_disorders_mps.Robject" - contains all the withint and between-trait methylation profile scores.
 
